@@ -5,23 +5,24 @@ import logging
 from aiohttp import web
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, Update, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, Update
 
-# ------------------ ENV ------------------
+# ------------------ Конфигурация ------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан! Установите переменную окружения BOT_TOKEN.")
 
 ADMIN_TELEGRAM_ID = int(os.environ.get("ADMIN_TELEGRAM_ID", 0))
-PORT = int(os.environ.get("PORT", 8000))
+PORT = int(os.environ.get("PORT", 5000))  # Render сам даёт PORT
 
-# ------------------ LOGGING ------------------
+# ------------------ Логирование ------------------
 logging.basicConfig(level=logging.INFO)
+logging.getLogger('aiohttp.access').setLevel(logging.INFO)  # лог всех HTTP-запросов
 
-# ------------------ BOT ------------------
+# ------------------ Инициализация бота ------------------
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -38,7 +39,8 @@ role_keyboard = ReplyKeyboardMarkup(
         [KeyboardButton(text="CEO / управляющий")],
         [KeyboardButton(text="Предприниматель (стартап / малый бизнес)")]
     ],
-    resize_keyboard=True
+    resize_keyboard=True,
+    one_time_keyboard=True
 )
 
 time_keyboard = ReplyKeyboardMarkup(
@@ -47,7 +49,8 @@ time_keyboard = ReplyKeyboardMarkup(
         [KeyboardButton(text="День")],
         [KeyboardButton(text="Вечер")]
     ],
-    resize_keyboard=True
+    resize_keyboard=True,
+    one_time_keyboard=True
 )
 
 # ------------------ Handlers ------------------
@@ -68,9 +71,11 @@ async def process_name(message: Message, state: FSMContext):
     if not re.match(r"^[A-Za-zА-Яа-яЁё\s\-]{2,30}$", name):
         await message.answer("Пожалуйста, укажите имя без цифр и специальных символов.")
         return
-
     await state.update_data(client_name=name)
-    await message.answer("Уточните вашу текущую роль в бизнесе:", reply_markup=role_keyboard)
+    await message.answer(
+        "Спасибо.\n\nУточните вашу текущую роль в бизнесе:",
+        reply_markup=role_keyboard
+    )
     await state.set_state(BookingForm.role)
 
 @dp.message(
@@ -83,7 +88,10 @@ async def process_name(message: Message, state: FSMContext):
 )
 async def process_role(message: Message, state: FSMContext):
     await state.update_data(role=message.text)
-    await message.answer("Выберите удобную половину дня:", reply_markup=time_keyboard)
+    await message.answer(
+        "Выберите удобную половину дня для сессии:",
+        reply_markup=time_keyboard
+    )
     await state.set_state(BookingForm.time_of_day)
 
 @dp.message(
@@ -94,28 +102,57 @@ async def process_time(message: Message, state: FSMContext):
     data = await state.get_data()
     user = message.from_user
 
+    # ------------------ сообщение админу ------------------
     admin_message = (
-        "❤️ ДИАГНОСТИЧЕСКАЯ СЕССИЯ\n\n"
+        "❤️ ДИАГНОСТИЧЕСКАЯ СЕССИЯ\n"
+        "«Бизнес как продолжение любви»\n\n"
         f"👤 Имя: {data['client_name']}\n"
         f"🎯 Роль: {data['role']}\n"
-        f"⏰ Время: {message.text}\n\n"
-        f"🔗 @{user.username if user.username else 'не указан'}\n"
+        f"⏰ Половина дня: {message.text}\n\n"
+        f"🔗 Telegram: @{user.username if user.username else 'не указан'}\n"
         f"🆔 ID: {user.id}"
     )
+    asyncio.create_task(bot.send_message(ADMIN_TELEGRAM_ID, admin_message))
 
-    if ADMIN_TELEGRAM_ID:
-        asyncio.create_task(bot.send_message(ADMIN_TELEGRAM_ID, admin_message))
-
-    from aiogram.types import ReplyKeyboardRemove
-
+    # ------------------ ответ пользователю ------------------
     await message.answer(
         "Благодарю.\n\n"
         "Мы свяжемся с вами в Telegram для согласования даты и времени.\n\n"
         "До встречи.",
-        reply_markup=ReplyKeyboardRemove()
+        reply_markup=ReplyKeyboardRemove()  # убираем клавиатуру
     )
 
     await state.clear()
+
+@dp.message()
+async def fallback(message: Message):
+    await message.answer("Для записи на диагностическую сессию используйте команду /start.")
+
+# ------------------ Webhook endpoint ------------------
+async def handle_webhook(request: web.Request):
+    logging.info("Webhook received")  # <-- логируем каждый приход webhook
+    try:
+        data = await request.json()
+        update = Update(**data)
+        await dp.feed_update(bot, update)
+    except Exception as e:
+        logging.exception(f"Ошибка обработки update: {e}")
+    return web.Response(text="ok")
+
+# ------------------ Healthcheck endpoint ------------------
+async def healthcheck(request: web.Request):
+    logging.info("Healthcheck ping")  # <-- логируем пинг UptimeRobot
+    return web.Response(text="Bot is alive")
+
+# ------------------ Run server ------------------
+app = web.Application()
+app.router.add_get("/", healthcheck)
+app.router.add_post(f"/webhook/{BOT_TOKEN}", handle_webhook)
+
+if __name__ == "__main__":
+    logging.info(f"Бот запущен. PORT={PORT}")
+    web.run_app(app, host="0.0.0.0", port=PORT)
+
 
 @dp.message()
 async def fallback(message: Message):
