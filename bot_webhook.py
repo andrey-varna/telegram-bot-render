@@ -7,12 +7,18 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, Update
 from aiogram.filters import CommandStart
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
+import logging
 
 # ------------------ Настройки ------------------
-BOT_TOKEN = os.environ.get("8110652792:AAESu--Mv8-gRjl_GGAi1OPF1NUc3yq3lGc")
-ADMIN_TELEGRAM_ID = int(os.environ.get("476041868", 0))
+BOT_TOKEN = os.environ.get("BOT_TOKEN")  # Берём из переменной окружения Render
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN не задан! Установите переменную окружения BOT_TOKEN в Render.")
+
+ADMIN_TELEGRAM_ID = int(os.environ.get("ADMIN_TELEGRAM_ID", 0))
 PORT = int(os.environ.get("PORT", 8000))  # Render сам даёт PORT
 # ------------------------------------------------
+
+logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -119,18 +125,18 @@ async def fallback(message: Message):
     await message.answer("Для записи на диагностическую сессию используйте команду /start.")
 
 # ------------------ Webhook endpoint ------------------
-async def handle(request):
+async def handle_webhook(request: web.Request):
     try:
         update = await request.json()
         await dp.process_update(Update(**update))
     except Exception as e:
-        print("Ошибка при обработке update:", e)
-    return web.Response(text="ok")  # Telegram ждёт 200 OK
+        logging.exception(f"Ошибка обработки update: {e}")
+    return web.Response(text="ok")
 
 app = web.Application()
-app.router.add_post(f'/webhook/{BOT_TOKEN}', handle)
+app.router.add_post(f"/webhook/{BOT_TOKEN}", handle_webhook)
 
 # ------------------ Run server ------------------
 if __name__ == "__main__":
-    print(f"Бот запущен на Render. PORT={PORT}")
-    web.run_app(app, port=PORT)
+    logging.info(f"Бот запущен на Render. PORT={PORT}")
+    web.run_app(app, host="0.0.0.0", port=PORT)
