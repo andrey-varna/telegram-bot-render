@@ -106,11 +106,15 @@ async def process_time(message: Message, state: FSMContext):
     if ADMIN_TELEGRAM_ID:
         asyncio.create_task(bot.send_message(ADMIN_TELEGRAM_ID, admin_message))
 
+    from aiogram.types import ReplyKeyboardRemove
+
     await message.answer(
         "Благодарю.\n\n"
         "Мы свяжемся с вами в Telegram для согласования даты и времени.\n\n"
-        "До встречи."
+        "До встречи.",
+        reply_markup=ReplyKeyboardRemove()
     )
+
     await state.clear()
 
 @dp.message()
