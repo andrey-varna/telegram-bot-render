@@ -1,0 +1,3 @@
+BOT_TOKEN = "8110652792:AAESu--Mv8-gRjl_GGAi1OPF1NUc3yq3lGc"
+ADMIN_TELEGRAM_ID = 476041868  - Танин
+репрозиторий https://github.com/andrey-varna/telegram-bot-render.git
