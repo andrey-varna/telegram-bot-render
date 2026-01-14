@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: telegram-bot
+    env: python
+    plan: free
+    pythonVersion: 3.11.18
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot_webhook.py
