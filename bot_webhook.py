@@ -1,50 +1,34 @@
 import os
-import asyncio
 import re
+import asyncio
+import logging
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, Update
 from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.context import FSMContext
-import logging
+from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup, Update
 
-# ------------------ Настройки ------------------
-import os
-import re
-import asyncio
-import logging
-from aiohttp import web
-
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, Update
-from aiogram.filters import CommandStart
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import StatesGroup, State
-from aiogram.fsm.storage.memory import MemoryStorage
-
-# ------------------ Переменные окружения ------------------
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# ---------------- Настройки ----------------
+BOT_TOKEN = os.environ.get("BOT_TOKEN")  # На Render добавьте переменную BOT_TOKEN
 if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN не задан! Установите переменную окружения BOT_TOKEN в Render.")
+    raise RuntimeError("BOT_TOKEN не задан! Установите переменную окружения BOT_TOKEN.")
 
-ADMIN_TELEGRAM_ID = int(os.environ.get("ADMIN_TELEGRAM_ID", 0))
-PORT = int(os.environ.get("PORT", 8000))  # Render сам задаёт PORT
+ADMIN_TELEGRAM_ID = int(os.environ.get("ADMIN_TELEGRAM_ID", 0))  # ID администратора
+PORT = int(os.environ.get("PORT", 5000))  # Render сам даёт PORT, локально можно 5000
 
-# ------------------ Логирование ------------------
 logging.basicConfig(level=logging.INFO)
 
-# ------------------ Инициализация бота и диспетчера ------------------
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+dp = Dispatcher()
 
-# ------------------ FSM ------------------
+# ---------------- FSM ----------------
 class BookingForm(StatesGroup):
     name = State()
     role = State()
     time_of_day = State()
 
-# ------------------ Keyboards ------------------
+# ---------------- Keyboards ----------------
 role_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="Собственник бизнеса")],
@@ -65,7 +49,7 @@ time_keyboard = ReplyKeyboardMarkup(
     one_time_keyboard=True
 )
 
-# ------------------ Handlers ------------------
+# ---------------- Handlers ----------------
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
     await state.clear()
@@ -114,7 +98,7 @@ async def process_time(message: Message, state: FSMContext):
     data = await state.get_data()
     user = message.from_user
 
-    # ------------------ сообщение админу ------------------
+    # Сообщение админу
     admin_message = (
         "❤️ ДИАГНОСТИЧЕСКАЯ СЕССИЯ\n"
         "«Бизнес как продолжение любви»\n\n"
@@ -126,32 +110,36 @@ async def process_time(message: Message, state: FSMContext):
     )
     asyncio.create_task(bot.send_message(ADMIN_TELEGRAM_ID, admin_message))
 
-    # ------------------ ответ пользователю ------------------
+    # Ответ пользователю
     await message.answer(
         "Благодарю.\n\n"
         "Мы с вами свяжемся в Telegram, чтобы согласовать день и свободное время.\n\n"
         "До встречи."
     )
-
     await state.clear()
 
 @dp.message()
 async def fallback(message: Message):
     await message.answer("Для записи на диагностическую сессию используйте команду /start.")
 
-# ------------------ Webhook endpoint ------------------
+# ---------------- Webhook endpoint ----------------
 async def handle_webhook(request: web.Request):
     try:
         update = await request.json()
+        logging.info(f"Incoming update: {update}")
         await dp.process_update(Update(**update))
     except Exception as e:
         logging.exception(f"Ошибка обработки update: {e}")
     return web.Response(text="ok")
 
-# ------------------ Запуск aiohttp приложения ------------------
+# ---------------- Приложение ----------------
 app = web.Application()
-app.router.add_post(f"/webhook/{BOT_TOKEN}", handle_webhook)
+app.add_routes([
+    web.post(f"/webhook/{BOT_TOKEN}", handle_webhook),
+    web.get("/", lambda request: web.Response(text="Сервер жив!"))
+])
 
+# ---------------- Запуск сервера ----------------
 if __name__ == "__main__":
-    logging.info(f"Бот запущен на Render. PORT={PORT}")
+    logging.info(f"Бот запущен. PORT={PORT}")
     web.run_app(app, host="0.0.0.0", port=PORT)
