@@ -1,5 +1,5 @@
 # Telegram bot
-aiogram==3.5.2
+aiogram==3.24.0
 
 # Async file and HTTP handling
 aiofiles>=23.2.1
