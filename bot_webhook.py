@@ -10,18 +10,33 @@ from aiogram.fsm.context import FSMContext
 import logging
 
 # ------------------ Настройки ------------------
-BOT_TOKEN = os.environ.get("BOT_TOKEN")  # Берём из переменной окружения Render
+import os
+import re
+import asyncio
+import logging
+from aiohttp import web
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, Update
+from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.storage.memory import MemoryStorage
+
+# ------------------ Переменные окружения ------------------
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не задан! Установите переменную окружения BOT_TOKEN в Render.")
 
 ADMIN_TELEGRAM_ID = int(os.environ.get("ADMIN_TELEGRAM_ID", 0))
-PORT = int(os.environ.get("PORT", 8000))  # Render сам даёт PORT
-# ------------------------------------------------
+PORT = int(os.environ.get("PORT", 8000))  # Render сам задаёт PORT
 
+# ------------------ Логирование ------------------
 logging.basicConfig(level=logging.INFO)
 
+# ------------------ Инициализация бота и диспетчера ------------------
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
 
 # ------------------ FSM ------------------
 class BookingForm(StatesGroup):
@@ -133,10 +148,10 @@ async def handle_webhook(request: web.Request):
         logging.exception(f"Ошибка обработки update: {e}")
     return web.Response(text="ok")
 
+# ------------------ Запуск aiohttp приложения ------------------
 app = web.Application()
 app.router.add_post(f"/webhook/{BOT_TOKEN}", handle_webhook)
 
-# ------------------ Run server ------------------
 if __name__ == "__main__":
     logging.info(f"Бот запущен на Render. PORT={PORT}")
     web.run_app(app, host="0.0.0.0", port=PORT)
