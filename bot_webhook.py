@@ -2,17 +2,17 @@ import os
 import re
 import asyncio
 import logging
-import requests
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+import requests
 
 # ------------------ Конфигурация ------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_TELEGRAM_ID = int(os.environ.get("ADMIN_TELEGRAM_ID", 0))
-PORT = int(os.environ.get("PORT", 5000))  # Render даёт порт
-RENDER_URL = os.environ.get("RENDER_URL")  # Пример: https://srv-d5juasp4tr6s73b3r8pg.onrender.com
+PORT = int(os.environ.get("PORT", 5000))
+RENDER_URL = os.environ.get("RENDER_URL")  # https://srv-d5juasp4tr6s73b3r8pg.onrender.com
 WEBHOOK_URL = f"{RENDER_URL}/webhook"
 
 if not BOT_TOKEN or not ADMIN_TELEGRAM_ID or not RENDER_URL:
@@ -38,38 +38,42 @@ class BookingForm(StatesGroup):
 # ------------------ Keyboards ------------------
 role_keyboard = types.ReplyKeyboardMarkup(
     keyboard=[
-        [types.KeyboardButton("Собственник бизнеса")],
-        [types.KeyboardButton("CEO / управляющий")],
-        [types.KeyboardButton("Предприниматель (стартап / малый бизнес)")]
+        [types.KeyboardButton(text="Собственник бизнеса")],
+        [types.KeyboardButton(text="CEO / управляющий")],
+        [types.KeyboardButton(text="Предприниматель (стартап / малый бизнес)")]
     ], resize_keyboard=True, one_time_keyboard=True
 )
+
 business_keyboard = types.ReplyKeyboardMarkup(
     keyboard=[
-        [types.KeyboardButton("Только запускаю")],
-        [types.KeyboardButton("Действующий")],
-        [types.KeyboardButton("Масштабирую")]
+        [types.KeyboardButton(text="Только запускаю")],
+        [types.KeyboardButton(text="Действующий")],
+        [types.KeyboardButton(text="Масштабирую")]
     ], resize_keyboard=True, one_time_keyboard=True
 )
+
 partner_keyboard = types.ReplyKeyboardMarkup(
     keyboard=[
-        [types.KeyboardButton("Да")],
-        [types.KeyboardButton("Нет, но хочу")],
-        [types.KeyboardButton("Нет, мы в разных сферах")]
+        [types.KeyboardButton(text="Да")],
+        [types.KeyboardButton(text="Нет, но хочу")],
+        [types.KeyboardButton(text="Нет, мы в разных сферах")]
     ], resize_keyboard=True, one_time_keyboard=True
 )
+
 income_keyboard = types.ReplyKeyboardMarkup(
     keyboard=[
-        [types.KeyboardButton("До 50 000 ₽")],
-        [types.KeyboardButton("50 000 – 200 000 ₽")],
-        [types.KeyboardButton("200 000 – 500 000 ₽")],
-        [types.KeyboardButton("Более 500 000 ₽")]
+        [types.KeyboardButton(text="До 50 000 ₽")],
+        [types.KeyboardButton(text="50 000 – 200 000 ₽")],
+        [types.KeyboardButton(text="200 000 – 500 000 ₽")],
+        [types.KeyboardButton(text="Более 500 000 ₽")]
     ], resize_keyboard=True, one_time_keyboard=True
 )
+
 time_keyboard = types.ReplyKeyboardMarkup(
     keyboard=[
-        [types.KeyboardButton("Утро")],
-        [types.KeyboardButton("День")],
-        [types.KeyboardButton("Вечер")]
+        [types.KeyboardButton(text="Утро")],
+        [types.KeyboardButton(text="День")],
+        [types.KeyboardButton(text="Вечер")]
     ], resize_keyboard=True, one_time_keyboard=True
 )
 
@@ -81,7 +85,14 @@ async def fallback(message: types.Message):
 @dp.message(commands=["start"])
 async def start(message: types.Message, state: FSMContext):
     await state.clear()
-    await message.answer("Здравствуйте! Как к вам можно обращаться?")
+    await message.answer("Здравствуйте!"
+                         " Я бот Татьяны Прокопчук."
+                         " Рада, что вы решились уделить время себе и своему делу."
+                         " Диагностика — это точка, где заканчивается автоматика и "
+                         "начинается осознанное управление жизнью. "
+                         "Чтобы подобрать время для диагностики и провести ее максимально полезно, "
+                         "ответьте, пожалуйста, на несколько вопросов:"
+                         "Как к вам можно обращаться?")
     await state.set_state(BookingForm.name)
 
 @dp.message(BookingForm.name)
@@ -141,6 +152,8 @@ async def process_time(message: types.Message, state: FSMContext):
 
 # ------------------ Webhook ------------------
 async def handle_webhook(request: web.Request):
+    if request.method != "POST":
+        return web.Response(text="Webhook endpoint")
     try:
         data = await request.json()
         update = types.Update(**data)
@@ -153,7 +166,7 @@ async def handle_webhook(request: web.Request):
 async def healthcheck(request: web.Request):
     return web.Response(text="Bot is alive")
 
-# ------------------ Проверка webhook ------------------
+# ------------------ Проверка и установка webhook ------------------
 def check_and_set_webhook():
     info = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo").json()
     current = info.get("result", {}).get("url")
