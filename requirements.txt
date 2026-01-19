@@ -20,7 +20,7 @@ magic-filter>=1.0.12
 attrs>=23.1.0
 certifi>=2025.7.3
 idna>=3.4
-
+requests==2.31.0
 
 
 
