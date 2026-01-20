@@ -31,18 +31,18 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # ================== GOOGLE SHEETS ==================
-SCOPES = (
+SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
-)
+]
 
 service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 credentials = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
 gc = gspread.Client(auth=credentials)
+
 sheet = gc.open_by_key("15Z2TztesrsbYVzzg4eWqfe1m_Jr_EDVKGhkdiXb7uAI").sheet1
 
 def save_or_update_user(data: dict):
-    """Сохраняет или обновляет пользователя по telegram_id"""
     records = sheet.get_all_records()
     ids = [str(r.get("telegram_id")) for r in records]
 
@@ -62,7 +62,7 @@ def save_or_update_user(data: dict):
     ]
 
     if str(data["telegram_id"]) in ids:
-        idx = ids.index(str(data["telegram_id"])) + 2  # +2 из-за заголовка
+        idx = ids.index(str(data["telegram_id"])) + 2
         sheet.update(f"A{idx}:L{idx}", [row])
     else:
         sheet.append_row(row)
@@ -82,7 +82,8 @@ role_keyboard = types.ReplyKeyboardMarkup(
         [types.KeyboardButton(text="Собственник бизнеса")],
         [types.KeyboardButton(text="CEO / управляющий")],
         [types.KeyboardButton(text="Предприниматель")]
-    ], resize_keyboard=True
+    ],
+    resize_keyboard=True
 )
 
 business_keyboard = types.ReplyKeyboardMarkup(
@@ -90,7 +91,8 @@ business_keyboard = types.ReplyKeyboardMarkup(
         [types.KeyboardButton(text="Только запускаю")],
         [types.KeyboardButton(text="Действующий бизнес")],
         [types.KeyboardButton(text="Масштабирую")]
-    ], resize_keyboard=True
+    ],
+    resize_keyboard=True
 )
 
 partner_keyboard = types.ReplyKeyboardMarkup(
@@ -98,7 +100,8 @@ partner_keyboard = types.ReplyKeyboardMarkup(
         [types.KeyboardButton(text="Да")],
         [types.KeyboardButton(text="Нет, но хочу")],
         [types.KeyboardButton(text="Нет")]
-    ], resize_keyboard=True
+    ],
+    resize_keyboard=True
 )
 
 income_keyboard = types.ReplyKeyboardMarkup(
@@ -107,7 +110,8 @@ income_keyboard = types.ReplyKeyboardMarkup(
         [types.KeyboardButton(text="50 000 – 200 000")],
         [types.KeyboardButton(text="200 000 – 500 000")],
         [types.KeyboardButton(text="Более 500 000")]
-    ], resize_keyboard=True
+    ],
+    resize_keyboard=True
 )
 
 time_keyboard = types.ReplyKeyboardMarkup(
@@ -115,25 +119,26 @@ time_keyboard = types.ReplyKeyboardMarkup(
         [types.KeyboardButton(text="Утро")],
         [types.KeyboardButton(text="День")],
         [types.KeyboardButton(text="Вечер")]
-    ], resize_keyboard=True
+    ],
+    resize_keyboard=True
 )
 
 record_keyboard = InlineKeyboardMarkup(
-    inline_keyboard=[[InlineKeyboardButton(text="📅 Записаться на консультацию", callback_data="record")]]
+    inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Записаться на консультацию", callback_data="record")]
+    ]
 )
 
 # ================== START ==================
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
     await state.clear()
-
     args = message.text.split(" ", 1)
     source, campaign = "organic", ""
     if len(args) > 1:
         parts = args[1].split("_", 1)
         source = parts[0]
         campaign = parts[1] if len(parts) > 1 else ""
-
     await state.update_data(source=source, campaign=campaign)
 
     save_or_update_user({
@@ -145,8 +150,10 @@ async def start(message: types.Message, state: FSMContext):
     })
 
     await message.answer(
-        "Здравствуйте.\n\nЧтобы диагностика была максимально полезной, "
-        "ответьте на несколько вопросов.\n\nКак к вам можно обращаться?"
+        "Здравствуйте.\n\n"
+        "Чтобы диагностика была максимально полезной, "
+        "ответьте, пожалуйста, на несколько вопросов.\n\n"
+        "Как к вам можно обращаться?"
     )
     await state.set_state(BookingForm.name)
 
@@ -157,70 +164,73 @@ async def process_name(message: types.Message, state: FSMContext):
         await message.answer("Введите корректное имя.")
         return
     await state.update_data(name=message.text)
-    data = await state.get_data()
     save_or_update_user({
         "telegram_id": message.from_user.id,
         "username": message.from_user.username,
-        **data,
-        "name": message.text
+        "name": message.text,
+        "status": "in_progress"
     })
     await message.answer("Ваша роль в бизнесе:", reply_markup=role_keyboard)
     await state.set_state(BookingForm.role)
 
 @dp.message(BookingForm.role)
-async def process_role(message: types.Message, state: FSMContext):
+async def process_role(message, state):
     await state.update_data(role=message.text)
     data = await state.get_data()
     save_or_update_user({
         "telegram_id": message.from_user.id,
         "username": message.from_user.username,
         **data,
-        "role": message.text
+        "role": message.text,
+        "status": "in_progress"
     })
     await message.answer("Ваш бизнес сейчас:", reply_markup=business_keyboard)
     await state.set_state(BookingForm.business_stage)
 
 @dp.message(BookingForm.business_stage)
-async def process_business(message: types.Message, state: FSMContext):
+async def process_business(message, state):
     await state.update_data(business_stage=message.text)
     data = await state.get_data()
     save_or_update_user({
         "telegram_id": message.from_user.id,
         "username": message.from_user.username,
         **data,
-        "business_stage": message.text
+        "business_stage": message.text,
+        "status": "in_progress"
     })
     await message.answer("Есть ли у вас партнер?", reply_markup=partner_keyboard)
     await state.set_state(BookingForm.partner)
 
 @dp.message(BookingForm.partner)
-async def process_partner(message: types.Message, state: FSMContext):
+async def process_partner(message, state):
     await state.update_data(partner=message.text)
     data = await state.get_data()
     save_or_update_user({
         "telegram_id": message.from_user.id,
         "username": message.from_user.username,
         **data,
-        "partner": message.text
+        "partner": message.text,
+        "status": "in_progress"
     })
     await message.answer("Ваш текущий доход:", reply_markup=income_keyboard)
     await state.set_state(BookingForm.income)
 
 @dp.message(BookingForm.income)
-async def process_income(message: types.Message, state: FSMContext):
+async def process_income(message, state):
     await state.update_data(income=message.text)
     data = await state.get_data()
     save_or_update_user({
         "telegram_id": message.from_user.id,
         "username": message.from_user.username,
         **data,
-        "income": message.text
+        "income": message.text,
+        "status": "in_progress"
     })
     await message.answer("Удобная половина дня:", reply_markup=time_keyboard)
     await state.set_state(BookingForm.time_of_day)
 
 @dp.message(BookingForm.time_of_day)
-async def process_time(message: types.Message, state: FSMContext):
+async def process_time(message, state):
     await state.update_data(time_of_day=message.text)
     data = await state.get_data()
     save_or_update_user({
@@ -230,17 +240,15 @@ async def process_time(message: types.Message, state: FSMContext):
         "time_of_day": message.text,
         "status": "needs_followup"
     })
-
     if ADMIN_TELEGRAM_ID:
         asyncio.create_task(
             bot.send_message(
                 ADMIN_TELEGRAM_ID,
                 f"⚠️ ЛИД НА ДОРАБОТКУ\n\n"
-                f"{data.get('name', '')} — {data.get('business_stage', '')}\n"
-                f"Источник: {data.get('source', '')} / {data.get('campaign', '')}"
+                f"{data['name']} — {data['business_stage']}\n"
+                f"Источник: {data['source']} / {data['campaign']}"
             )
         )
-
     await message.answer(
         "Спасибо. Ниже вы можете записаться на консультацию.",
         reply_markup=record_keyboard
@@ -249,17 +257,24 @@ async def process_time(message: types.Message, state: FSMContext):
 
 # ================== ЗАПИСАТЬСЯ ==================
 @dp.callback_query(lambda c: c.data == "record")
-async def record_callback(callback: types.CallbackQuery):
+async def record_callback(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()  # Получаем текущее состояние (если есть)
+    # Обновляем в таблице статус
     save_or_update_user({
         "telegram_id": callback.from_user.id,
+        "username": callback.from_user.username,
+        **data,
         "status": "recorded"
     })
-    await callback.message.answer("Спасибо. Мы свяжемся с вами для подтверждения и согласования времени.")
+    await callback.message.answer(
+        "Спасибо. Мы свяжемся с вами для подтверждения и согласования времени."
+    )
+    await state.clear()
     await callback.answer()
 
 # ================== FALLBACK ==================
 @dp.message()
-async def fallback(message: types.Message):
+async def fallback(message):
     await message.answer("Используйте /start")
 
 # ================== WEBHOOK ==================
