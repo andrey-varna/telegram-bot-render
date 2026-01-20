@@ -44,7 +44,8 @@ credentials = Credentials.from_service_account_info(service_account_info, scopes
 gc = gspread.Client(auth=credentials)
 
 
-sheet = gc.open("Prounity Leads").sheet1
+sheet = gc.open_by_key("15Z2TztesrsbYVzzg4eWqfe1m_Jr_EDVKGhkdiXb7uAI").sheet1
+
 def save_or_update_user(data: dict):
     records = sheet.get_all_records()
     ids = [str(r["telegram_id"]) for r in records]
