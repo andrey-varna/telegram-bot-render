@@ -31,19 +31,20 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # ================== GOOGLE SHEETS ==================
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+SCOPES = (
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+    )
 
 service_account_info = json.loads(
     os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
 )
 
-creds = Credentials.from_service_account_info(
-    service_account_info, scopes=SCOPES
-)
+credentials = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
+gc = gspread.Client(auth=credentials)
+gc.login()
 
-gc = gspread.authorize(creds)
 sheet = gc.open("Prounity Leads").sheet1
-
 def save_or_update_user(data: dict):
     records = sheet.get_all_records()
     ids = [str(r["telegram_id"]) for r in records]
