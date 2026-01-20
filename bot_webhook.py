@@ -4,6 +4,7 @@ import json
 import asyncio
 import logging
 from datetime import datetime
+
 from aiohttp import web
 import gspread
 from google.oauth2.service_account import Credentials
@@ -11,7 +12,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 
 # ================== КОНФИГУРАЦИЯ ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -31,20 +32,22 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # ================== GOOGLE SHEETS ==================
-SCOPES = [
+SCOPES = (
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
-]
+)
 
 service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 credentials = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
 gc = gspread.Client(auth=credentials)
+gc.login()  # авторизация
 
 sheet = gc.open_by_key("15Z2TztesrsbYVzzg4eWqfe1m_Jr_EDVKGhkdiXb7uAI").sheet1
 
 def save_or_update_user(data: dict):
+    """Сохраняет или обновляет пользователя в таблице."""
     records = sheet.get_all_records()
-    ids = [str(r.get("telegram_id")) for r in records]
+    ids = [str(r.get("telegram_id", "")) for r in records]
 
     row = [
         data.get("telegram_id"),
@@ -55,7 +58,7 @@ def save_or_update_user(data: dict):
         data.get("partner", ""),
         data.get("income", ""),
         data.get("time_of_day", ""),
-        data.get("status", ""),
+        data.get("status"),
         data.get("source", ""),
         data.get("campaign", ""),
         datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -139,6 +142,7 @@ async def start(message: types.Message, state: FSMContext):
         parts = args[1].split("_", 1)
         source = parts[0]
         campaign = parts[1] if len(parts) > 1 else ""
+
     await state.update_data(source=source, campaign=campaign)
 
     save_or_update_user({
@@ -168,87 +172,82 @@ async def process_name(message: types.Message, state: FSMContext):
         "telegram_id": message.from_user.id,
         "username": message.from_user.username,
         "name": message.text,
-        "status": "in_progress"
+        "status": "visited"
     })
     await message.answer("Ваша роль в бизнесе:", reply_markup=role_keyboard)
     await state.set_state(BookingForm.role)
 
 @dp.message(BookingForm.role)
-async def process_role(message, state):
+async def process_role(message: types.Message, state: FSMContext):
     await state.update_data(role=message.text)
-    data = await state.get_data()
     save_or_update_user({
         "telegram_id": message.from_user.id,
         "username": message.from_user.username,
-        **data,
         "role": message.text,
-        "status": "in_progress"
+        "status": "visited"
     })
     await message.answer("Ваш бизнес сейчас:", reply_markup=business_keyboard)
     await state.set_state(BookingForm.business_stage)
 
 @dp.message(BookingForm.business_stage)
-async def process_business(message, state):
+async def process_business(message: types.Message, state: FSMContext):
     await state.update_data(business_stage=message.text)
-    data = await state.get_data()
     save_or_update_user({
         "telegram_id": message.from_user.id,
         "username": message.from_user.username,
-        **data,
         "business_stage": message.text,
-        "status": "in_progress"
+        "status": "visited"
     })
     await message.answer("Есть ли у вас партнер?", reply_markup=partner_keyboard)
     await state.set_state(BookingForm.partner)
 
 @dp.message(BookingForm.partner)
-async def process_partner(message, state):
+async def process_partner(message: types.Message, state: FSMContext):
     await state.update_data(partner=message.text)
-    data = await state.get_data()
     save_or_update_user({
         "telegram_id": message.from_user.id,
         "username": message.from_user.username,
-        **data,
         "partner": message.text,
-        "status": "in_progress"
+        "status": "visited"
     })
     await message.answer("Ваш текущий доход:", reply_markup=income_keyboard)
     await state.set_state(BookingForm.income)
 
 @dp.message(BookingForm.income)
-async def process_income(message, state):
+async def process_income(message: types.Message, state: FSMContext):
     await state.update_data(income=message.text)
-    data = await state.get_data()
     save_or_update_user({
         "telegram_id": message.from_user.id,
         "username": message.from_user.username,
-        **data,
         "income": message.text,
-        "status": "in_progress"
+        "status": "visited"
     })
     await message.answer("Удобная половина дня:", reply_markup=time_keyboard)
     await state.set_state(BookingForm.time_of_day)
 
 @dp.message(BookingForm.time_of_day)
-async def process_time(message, state):
+async def process_time(message: types.Message, state: FSMContext):
     await state.update_data(time_of_day=message.text)
     data = await state.get_data()
+    user = message.from_user
+
     save_or_update_user({
-        "telegram_id": message.from_user.id,
-        "username": message.from_user.username,
+        "telegram_id": user.id,
+        "username": user.username,
         **data,
-        "time_of_day": message.text,
         "status": "needs_followup"
     })
+
     if ADMIN_TELEGRAM_ID:
         asyncio.create_task(
             bot.send_message(
                 ADMIN_TELEGRAM_ID,
                 f"⚠️ ЛИД НА ДОРАБОТКУ\n\n"
-                f"{data['name']} — {data['business_stage']}\n"
-                f"Источник: {data['source']} / {data['campaign']}"
+                f"{data['name']} — {data.get('business_stage','')}\n"
+                f"Источник: {data.get('source','')} / {data.get('campaign','')}"
             )
         )
+
     await message.answer(
         "Спасибо. Ниже вы можете записаться на консультацию.",
         reply_markup=record_keyboard
@@ -257,24 +256,24 @@ async def process_time(message, state):
 
 # ================== ЗАПИСАТЬСЯ ==================
 @dp.callback_query(lambda c: c.data == "record")
-async def record_callback(callback: types.CallbackQuery, state: FSMContext):
-    data = await state.get_data()  # Получаем текущее состояние (если есть)
-    # Обновляем в таблице статус
-    save_or_update_user({
-        "telegram_id": callback.from_user.id,
-        "username": callback.from_user.username,
-        **data,
-        "status": "recorded"
-    })
+async def record_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    data = sheet.get_all_records()
+    ids = [str(r.get("telegram_id","")) for r in data]
+    if str(user_id) in ids:
+        idx = ids.index(str(user_id)) + 2
+        row = sheet.row_values(idx)
+        row[8] = "recorded"  # обновляем только статус (I столбец: статус)
+        sheet.update(f"A{idx}:L{idx}", [row])
     await callback.message.answer(
-        "Спасибо. Мы свяжемся с вами для подтверждения и согласования времени."
+        "Спасибо. Мы свяжемся с вами для подтверждения и согласования времени.",
+        reply_markup=ReplyKeyboardRemove()
     )
-    await state.clear()
     await callback.answer()
 
 # ================== FALLBACK ==================
 @dp.message()
-async def fallback(message):
+async def fallback(message: types.Message):
     await message.answer("Используйте /start")
 
 # ================== WEBHOOK ==================
@@ -294,4 +293,3 @@ app.router.add_post(WEBHOOK_PATH, webhook_handler)
 if __name__ == "__main__":
     logging.info(f"Bot started on port {PORT}")
     web.run_app(app, host="0.0.0.0", port=PORT)
-
