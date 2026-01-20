@@ -1,50 +1,20 @@
-# =========================
-# Dockerfile для Telegram-бота
-# =========================
+# Telegram bot
+aiogram==3.4.1
 
-# Используем официальный Python 3.13 slim образ
-FROM python:3.13-slim
+# Async HTTP and file handling
+aiohttp>=3.9.5,<4.0.0
+aiofiles>=23.2.1
 
-# =========================
-# Установка системных зависимостей для сборки пакетов с C/Rust
-# =========================
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        build-essential \
-        gcc \
-        g++ \
-        curl \
-        git \
-    && rm -rf /var/lib/apt/lists/*
+# Google Sheets
+gspread==6.1.2
+google-auth==2.28.2
+google-auth-oauthlib>=0.4.1
 
-# =========================
-# Создаем рабочую директорию
-# =========================
-WORKDIR /app
+# Utilities
+pydantic<3.0.0,>=2.5.3
+typing-extensions>=4.5.0
+python-dotenv==1.0.1
 
-# =========================
-# Копируем файлы проекта
-# =========================
-COPY requirements.txt .
-COPY bot_webhook.py .
-# Если есть другие нужные файлы, например .env
-# COPY .env .
-
-# =========================
-# Обновляем pip и устанавливаем зависимости
-# =========================
-RUN python -m pip install --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
-
-# =========================
-# Настройка переменных окружения
-# =========================
-ENV PORT=10000
-
-# =========================
-# Запуск бота
-# =========================
-CMD ["python", "bot_webhook.py"]
 
 
 
