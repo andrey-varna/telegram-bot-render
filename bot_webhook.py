@@ -31,41 +31,50 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # ================== GOOGLE SHEETS ==================
-SCOPES = (
+SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-    )
+    "https://www.googleapis.com/auth/drive"
+]
 
-service_account_info = json.loads(
-    os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-)
-
+service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 credentials = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
 gc = gspread.Client(auth=credentials)
-
-
 sheet = gc.open_by_key("15Z2TztesrsbYVzzg4eWqfe1m_Jr_EDVKGhkdiXb7uAI").sheet1
 
-def save_or_update_user(data: dict):
+def save_user_field(user_id: int, field: str, value: str, extra_data=None):
+    """Сохраняет отдельное поле пользователя в таблицу сразу."""
+    extra_data = extra_data or {}
     records = sheet.get_all_records()
-    ids = [str(r["telegram_id"]) for r in records]
+    ids = [str(r.get("telegram_id")) for r in records]
+    row = [None] * 11  # A-K
 
-    row = [
-        data.get("telegram_id"),
-        data.get("username"),
-        data.get("name", ""),
-        data.get("role", ""),
-        data.get("business_stage", ""),
-        data.get("partner", ""),
-        data.get("income", ""),
-        data.get("status"),
-        data.get("source"),
-        data.get("campaign"),
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ]
+    # Заполняем данные если есть в extra_data
+    keys = ["telegram_id", "username", "name", "role", "business_stage",
+            "partner", "income", "time_of_day", "status", "source", "campaign"]
 
-    if str(data["telegram_id"]) in ids:
-        idx = ids.index(str(data["telegram_id"])) + 2
+    for idx, key in enumerate(keys):
+        if key in extra_data:
+            row[idx] = extra_data[key]
+
+    # Обновляем только поле field
+    field_map = {
+        "telegram_id": 0,
+        "username": 1,
+        "name": 2,
+        "role": 3,
+        "business_stage": 4,
+        "partner": 5,
+        "income": 6,
+        "time_of_day": 7,
+        "status": 8,
+        "source": 9,
+        "campaign": 10
+    }
+    if field in field_map:
+        row[field_map[field]] = value
+
+    if str(user_id) in ids:
+        idx = ids.index(str(user_id)) + 2
         sheet.update(f"A{idx}:K{idx}", [row])
     else:
         sheet.append_row(row)
@@ -146,18 +155,22 @@ async def start(message: types.Message, state: FSMContext):
 
     await state.update_data(source=source, campaign=campaign)
 
-    save_or_update_user({
-        "telegram_id": message.from_user.id,
-        "username": message.from_user.username,
-        "status": "visited",
-        "source": source,
-        "campaign": campaign
-    })
+    save_user_field(
+        message.from_user.id,
+        "status",
+        "visited",
+        extra_data={
+            "telegram_id": message.from_user.id,
+            "username": message.from_user.username,
+            "source": source,
+            "campaign": campaign
+        }
+    )
 
     await message.answer(
         "Здравствуйте.\n\n"
         "Чтобы диагностика была максимально полезной, "
-        "ответьте, пожалуйста, на несколько вопросов.\n\n"
+        "ответьте на несколько вопросов.\n\n"
         "Как к вам можно обращаться?"
     )
     await state.set_state(BookingForm.name)
@@ -169,52 +182,50 @@ async def process_name(message: types.Message, state: FSMContext):
         await message.answer("Введите корректное имя.")
         return
     await state.update_data(name=message.text)
+    save_user_field(message.from_user.id, "name", message.text)
     await message.answer("Ваша роль в бизнесе:", reply_markup=role_keyboard)
     await state.set_state(BookingForm.role)
 
 @dp.message(BookingForm.role)
-async def process_role(message, state):
+async def process_role(message: types.Message, state: FSMContext):
     await state.update_data(role=message.text)
+    save_user_field(message.from_user.id, "role", message.text)
     await message.answer("Ваш бизнес сейчас:", reply_markup=business_keyboard)
     await state.set_state(BookingForm.business_stage)
 
 @dp.message(BookingForm.business_stage)
-async def process_business(message, state):
+async def process_business(message: types.Message, state: FSMContext):
     await state.update_data(business_stage=message.text)
+    save_user_field(message.from_user.id, "business_stage", message.text)
     await message.answer("Есть ли у вас партнер?", reply_markup=partner_keyboard)
     await state.set_state(BookingForm.partner)
 
 @dp.message(BookingForm.partner)
-async def process_partner(message, state):
+async def process_partner(message: types.Message, state: FSMContext):
     await state.update_data(partner=message.text)
+    save_user_field(message.from_user.id, "partner", message.text)
     await message.answer("Ваш текущий доход:", reply_markup=income_keyboard)
     await state.set_state(BookingForm.income)
 
 @dp.message(BookingForm.income)
-async def process_income(message, state):
+async def process_income(message: types.Message, state: FSMContext):
     await state.update_data(income=message.text)
+    save_user_field(message.from_user.id, "income", message.text)
     await message.answer("Удобная половина дня:", reply_markup=time_keyboard)
     await state.set_state(BookingForm.time_of_day)
 
 @dp.message(BookingForm.time_of_day)
-async def process_time(message, state):
-    data = await state.get_data()
-    user = message.from_user
-
-    save_or_update_user({
-        "telegram_id": user.id,
-        "username": user.username,
-        **data,
-        "status": "needs_followup"
-    })
+async def process_time(message: types.Message, state: FSMContext):
+    await state.update_data(time_of_day=message.text)
+    save_user_field(message.from_user.id, "time_of_day", message.text, extra_data={"status": "needs_followup"})
 
     if ADMIN_TELEGRAM_ID:
         asyncio.create_task(
             bot.send_message(
                 ADMIN_TELEGRAM_ID,
                 f"⚠️ ЛИД НА ДОРАБОТКУ\n\n"
-                f"{data['name']} — {data['business_stage']}\n"
-                f"Источник: {data['source']} / {data['campaign']}"
+                f"{message.from_user.full_name} — {message.text}\n"
+                f"ID: {message.from_user.id}"
             )
         )
 
@@ -227,25 +238,22 @@ async def process_time(message, state):
 # ================== ЗАПИСАТЬСЯ ==================
 @dp.callback_query(lambda c: c.data == "record")
 async def record_callback(callback: types.CallbackQuery):
-    save_or_update_user({
-        "telegram_id": callback.from_user.id,
-        "status": "recorded"
-    })
+    save_user_field(callback.from_user.id, "status", "recorded")
     await callback.message.answer("Спасибо. Мы свяжемся с вами для подтверждения и согласования времени.")
     await callback.answer()
 
 # ================== FALLBACK ==================
 @dp.message()
-async def fallback(message):
+async def fallback(message: types.Message):
     await message.answer("Используйте /start")
 
 # ================== WEBHOOK ==================
-async def webhook_handler(request):
+async def webhook_handler(request: web.Request):
     update = Update.model_validate(await request.json())
     await dp.feed_update(bot, update)
     return web.Response(text="ok")
 
-async def healthcheck(request):
+async def healthcheck(request: web.Request):
     return web.Response(text="Bot is alive")
 
 # ================== APP ==================
