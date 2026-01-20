@@ -42,7 +42,7 @@ service_account_info = json.loads(
 
 credentials = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
 gc = gspread.Client(auth=credentials)
-gc.login()
+
 
 sheet = gc.open("Prounity Leads").sheet1
 def save_or_update_user(data: dict):
