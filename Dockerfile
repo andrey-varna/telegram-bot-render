@@ -1,24 +1,27 @@
+# =========================
+# Используем Python 3.13 slim
 FROM python:3.13-slim
 
-# Установка зависимостей ОС
-RUN apt-get update && apt-get install -y \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# =========================
+# Обновляем pip и устанавливаем зависимости системы
+RUN apt-get update && apt-get install -y build-essential curl && \
+    python -m pip install --upgrade pip
 
-# Работаем в директории проекта
-WORKDIR /app
-COPY requirements.txt .
+# =========================
+# Устанавливаем Python-зависимости
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Устанавливаем Python-зависимости (только бинарные колёса)
-RUN python -m pip install --upgrade pip
-RUN pip install --no-cache-dir --only-binary=:all: -r requirements.txt
-
+# =========================
 # Копируем проект
+WORKDIR /app
 COPY . /app
 
+# =========================
 # Порт Render
 ENV PORT=10000
 EXPOSE 10000
 
-# Запуск бота
+# =========================
+# Запуск бота через webhook
 CMD ["python", "bot_webhook_1.py"]
