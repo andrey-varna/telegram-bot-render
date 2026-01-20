@@ -2,7 +2,15 @@ services:
   - type: web
     name: telegram-bot
     env: python
+    buildCommand: ""
+    startCommand: python bot_webhook_1.py
+    autoDeploy: true
     plan: free
-    pythonVersion: 3.11.18
-    buildCommand: pip install -r requirements.txt
-    startCommand: python bot_webhook.py
+    envVars:
+      - key: BOT_TOKEN
+        fromDatabase: true
+      - key: ADMIN_TELEGRAM_ID
+        fromDatabase: true
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        fromDatabase: true
+
