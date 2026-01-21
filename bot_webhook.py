@@ -156,15 +156,15 @@ async def start(message: types.Message, state: FSMContext):
 
     await message.answer(
         "Здравствуйте.\n\n"
-        "Рада, что вы здесь. Программа 'Бизнес как продолжение любви'"
+        "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' "
         "- это про то, как быть сильной, не ослабляя партнёра. "
         "И как создать дело, которое укрепляет отношения, а не разрушает их.\n\n"
-        "Диагностика - это первый шаг к тому, чтобы увидеть свою жизнь"
-        "как систему. За 40-60 минут мы найдём ключевые точки,"
-        "где сейчас утекает ваша энергия и сила."
+        "Диагностика - это первый шаг к тому, чтобы увидеть свою жизнь "
+        "как систему.  За 40-60 минут мы найдём ключевые точки, "
+        "где сейчас утекает ваша энергия и сила. "
         "Увидим, что даёт вам опору, а что тормозит движение.\n\n"
-        "Чтобы подготовиться и провести сессию максимально эффективно,"
-        "мне важно узнать о вас немного больше."
+        "Чтобы подготовиться и провести сессию максимально эффективно, "
+        "мне важно узнать о вас немного больше. "
         "Ответьте, пожалуйста, на несколько вопросов - это займёт 2-3 минуты.\n\n"
         "Как к вам можно обращаться?"
     )
@@ -220,16 +220,16 @@ async def process_partner(message: types.Message, state: FSMContext):
         "status": "visited"
     })
     await message.answer("И последний, самый важный вопрос:"
-    "Какую главную задачу вы хотите решить в ближайшие 3 месяца?:", reply_markup=income_keyboard)
+    "Какую главную задачу вы хотите решить в ближайшие 3 месяца?:", reply_markup=request_keyboard)
     await state.set_state(BookingForm.income)
 
 @dp.message(BookingForm.income)
 async def process_income(message: types.Message, state: FSMContext):
-    await state.update_data(income=message.text)
+    await state.update_data(request=message.text)
     save_or_update_user({
         "telegram_id": message.from_user.id,
         "username": message.from_user.username,
-        "income": message.text,
+        "request": message.text,
         "status": "visited"
     })
     await message.answer("Удобная половина дня:", reply_markup=time_keyboard)
