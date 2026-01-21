@@ -56,7 +56,7 @@ def save_or_update_user(data: dict):
         data.get("role", ""),
         data.get("business_stage", ""),
         data.get("partner", ""),
-        data.get("income", ""),
+        data.get("request", ""),
         data.get("time_of_day", ""),
         data.get("status"),
         data.get("source", ""),
@@ -84,7 +84,8 @@ role_keyboard = types.ReplyKeyboardMarkup(
     keyboard=[
         [types.KeyboardButton(text="Собственник бизнеса")],
         [types.KeyboardButton(text="CEO / управляющий")],
-        [types.KeyboardButton(text="Предприниматель")]
+        [types.KeyboardButton(text="Предприниматель")],
+        [types.KeyboardButton(text="Я эксперт/фрилансер")]
     ],
     resize_keyboard=True
 )
@@ -107,12 +108,12 @@ partner_keyboard = types.ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-income_keyboard = types.ReplyKeyboardMarkup(
+request_keyboard = types.ReplyKeyboardMarkup(
     keyboard=[
-        [types.KeyboardButton(text="До 50 000")],
-        [types.KeyboardButton(text="50 000 – 200 000")],
-        [types.KeyboardButton(text="200 000 – 500 000")],
-        [types.KeyboardButton(text="Более 500 000")]
+        [types.KeyboardButton(text="Перестать всё контролировать и тащить на себе")],
+        [types.KeyboardButton(text="Вернуть страсть и близость, не теряя доход")],
+        [types.KeyboardButton(text="Распределить роли, чтобы не конфликтовать")],
+        [types.KeyboardButton(text="Выйти на новый уровень дохода без выгорания")]
     ],
     resize_keyboard=True
 )
@@ -128,7 +129,7 @@ time_keyboard = types.ReplyKeyboardMarkup(
 
 record_keyboard = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="📅 Записаться на консультацию", callback_data="record")]
+        [InlineKeyboardButton(text="📅 Подтвердить данные", callback_data="record")]
     ]
 )
 
@@ -155,8 +156,16 @@ async def start(message: types.Message, state: FSMContext):
 
     await message.answer(
         "Здравствуйте.\n\n"
-        "Чтобы диагностика была максимально полезной, "
-        "ответьте, пожалуйста, на несколько вопросов.\n\n"
+        "Рада, что вы здесь. Программа 'Бизнес как продолжение любви'"
+        "- это про то, как быть сильной, не ослабляя партнёра. "
+        "И как создать дело, которое укрепляет отношения, а не разрушает их.\n\n"
+        "Диагностика - это первый шаг к тому, чтобы увидеть свою жизнь"
+        "как систему. За 40-60 минут мы найдём ключевые точки,"
+        "где сейчас утекает ваша энергия и сила."
+        "Увидим, что даёт вам опору, а что тормозит движение.\n\n"
+        "Чтобы подготовиться и провести сессию максимально эффективно,"
+        "мне важно узнать о вас немного больше."
+        "Ответьте, пожалуйста, на несколько вопросов - это займёт 2-3 минуты.\n\n"
         "Как к вам можно обращаться?"
     )
     await state.set_state(BookingForm.name)
@@ -210,7 +219,8 @@ async def process_partner(message: types.Message, state: FSMContext):
         "partner": message.text,
         "status": "visited"
     })
-    await message.answer("Ваш текущий доход:", reply_markup=income_keyboard)
+    await message.answer("И последний, самый важный вопрос:"
+    "Какую главную задачу вы хотите решить в ближайшие 3 месяца?:", reply_markup=income_keyboard)
     await state.set_state(BookingForm.income)
 
 @dp.message(BookingForm.income)
@@ -249,7 +259,7 @@ async def process_time(message: types.Message, state: FSMContext):
         )
 
     await message.answer(
-        "Спасибо. Ниже вы можете записаться на консультацию.",
+        "Спасибо. Подтвердите, пожалуйста, введенные данные.",
         reply_markup=record_keyboard
     )
     await state.clear()
