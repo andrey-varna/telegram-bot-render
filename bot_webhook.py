@@ -43,8 +43,8 @@ gc = gspread.Client(auth=credentials)
 gc.login()
 
 # Ключи таблиц
-ANALYTICS_SHEET_KEY = "15Z2TztesrsbYVzzg4eWqfe1m_Jr_EDVKGhkdiXb7uAI"
-LIVE_SHEET_KEY = "15Z2TztesrsbYVzzg4eWqfe1m_Jr_EDVKGhkdiXb7uAI"
+ANALYTICS_SHEET_KEY = "ВАШ_АНАЛИТИКА_КЛЮЧ"
+LIVE_SHEET_KEY = "ВАШ_LIVE_КЛЮЧ"
 
 analytics_sheet = gc.open_by_key(ANALYTICS_SHEET_KEY).sheet1
 live_sheet = gc.open_by_key(LIVE_SHEET_KEY).sheet1
@@ -53,7 +53,6 @@ live_sheet = gc.open_by_key(LIVE_SHEET_KEY).sheet1
 def save_analytics(data: dict):
     records = analytics_sheet.get_all_records()
     ids = [str(r.get("telegram_id","")) for r in records]
-
     row = [
         data.get("telegram_id"),
         data.get("username"),
@@ -61,20 +60,19 @@ def save_analytics(data: dict):
         data.get("role",""),
         data.get("business_stage",""),
         data.get("partner",""),
+        data.get("income",""),          # <--- добавлено поле главная задача
         data.get("time_of_day",""),
         data.get("status")
     ]
-
     if str(data["telegram_id"]) in ids:
         idx = ids.index(str(data["telegram_id"])) + 2
-        analytics_sheet.update(f"A{idx}:H{idx}", [row])
+        analytics_sheet.update(f"A{idx}:I{idx}", [row])
     else:
         analytics_sheet.append_row(row)
 
 def save_live(data: dict):
     records = live_sheet.get_all_records()
     ids = [str(r.get("telegram_id","")) for r in records]
-
     row = [
         data.get("telegram_id"),
         data.get("username"),
@@ -86,12 +84,30 @@ def save_live(data: dict):
         data.get("time_of_day",""),
         data.get("status")
     ]
-
     if str(data["telegram_id"]) in ids:
         idx = ids.index(str(data["telegram_id"])) + 2
         live_sheet.update(f"A{idx}:I{idx}", [row])
     else:
         live_sheet.append_row(row)
+
+async def save_all_data(user_id, username, data, status="pending_confirmation"):
+    save_analytics({
+        "telegram_id": user_id,
+        "username": username,
+        "name": data.get("name",""),
+        "role": data.get("role",""),
+        "business_stage": data.get("business_stage",""),
+        "partner": data.get("partner",""),
+        "income": data.get("income",""),  # <--- сохраняем в аналитику
+        "time_of_day": data.get("time_of_day",""),
+        "status": status
+    })
+    save_live({
+        "telegram_id": user_id,
+        "username": username,
+        **data,
+        "status": status
+    })
 
 # ================== FSM ==================
 class BookingForm(StatesGroup):
@@ -168,17 +184,7 @@ async def start(message: types.Message, state: FSMContext):
         campaign = parts[1] if len(parts) > 1 else ""
 
     await state.update_data(source=source, campaign=campaign)
-
-    save_analytics({
-        "telegram_id": message.from_user.id,
-        "username": message.from_user.username,
-        "status": "visited"
-    })
-    save_live({
-        "telegram_id": message.from_user.id,
-        "username": message.from_user.username,
-        "status": "visited"
-    })
+    await save_all_data(message.from_user.id, message.from_user.username, {}, status="visited")
 
     await message.answer(
         "Здравствуйте.\n\n"
@@ -196,24 +202,6 @@ async def start(message: types.Message, state: FSMContext):
     await state.set_state(BookingForm.name)
 
 # ================== ВОПРОСЫ ==================
-async def save_all_data(user_id, username, data, status="pending_confirmation"):
-    save_analytics({
-        "telegram_id": user_id,
-        "username": username,
-        "name": data.get("name",""),
-        "role": data.get("role",""),
-        "business_stage": data.get("business_stage",""),
-        "partner": data.get("partner",""),
-        "time_of_day": data.get("time_of_day",""),
-        "status": status
-    })
-    save_live({
-        "telegram_id": user_id,
-        "username": username,
-        **data,
-        "status": status
-    })
-
 @dp.message(BookingForm.name)
 async def process_name(message: types.Message, state: FSMContext):
     if not re.match(r"^[A-Za-zА-Яа-яЁё\s\-]{2,30}$", message.text):
@@ -266,10 +254,8 @@ async def process_time(message: types.Message, state: FSMContext):
     data = await state.get_data()
     user_id = message.from_user.id
     username = message.from_user.username
-
     await save_all_data(user_id, username, data)
 
-    # Отправка админу всех данных
     if ADMIN_TELEGRAM_ID:
         await bot.send_message(
             ADMIN_TELEGRAM_ID,
@@ -301,15 +287,14 @@ async def record_callback(callback: types.CallbackQuery):
     ids = [str(r.get("telegram_id","")) for r in all_rows]
     if str(user_id) in ids:
         idx = ids.index(str(user_id)) + 2
-        analytics_sheet.update(f"H{idx}", "confirmed")
+        analytics_sheet.update(f"I{idx}", "confirmed")  # поле status
 
-    # Живая таблица: очищаем лишние поля после отправки админу
+    # Живая таблица: очищаем лишние поля
     live_rows = live_sheet.get_all_records()
     live_ids = [str(r.get("telegram_id","")) for r in live_rows]
     if str(user_id) in live_ids:
         idx = live_ids.index(str(user_id)) + 2
         row = live_sheet.row_values(idx)
-        # очищаем лишние поля (оставляем только аналитические)
         live_sheet.update(f"A{idx}:I{idx}", [[row[0], row[1], row[2], row[3], row[4], row[5], "", row[7], "confirmed"]])
 
     await callback.message.answer(
@@ -333,9 +318,14 @@ async def follow_up_unconfirmed():
                         f"Telegram: @{r.get('username','не указано')}\n"
                         f"Связаться для подтверждения информации."
                     )
-                analytics_sheet.update(f"H{idx}", "needs_followup")
+                analytics_sheet.update(f"I{idx}", "needs_followup")
 
-asyncio.create_task(follow_up_unconfirmed())
+async def on_startup(app):
+    app['followup_task'] = asyncio.create_task(follow_up_unconfirmed())
+
+async def on_cleanup(app):
+    app['followup_task'].cancel()
+    await app['followup_task']
 
 # ================== FALLBACK ==================
 @dp.message()
@@ -355,6 +345,8 @@ async def healthcheck(request):
 app = web.Application()
 app.router.add_get("/", healthcheck)
 app.router.add_post(WEBHOOK_PATH, webhook_handler)
+app.on_startup.append(on_startup)
+app.on_cleanup.append(on_cleanup)
 
 if __name__ == "__main__":
     logging.info(f"Bot started on port {PORT}")
