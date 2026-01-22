@@ -1,6 +1,6 @@
 import os
-import json
 import re
+import json
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -12,24 +12,20 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+from aiogram.types import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 
-# ================== CONFIG ==================
+# ================== КОНФИГУРАЦИЯ ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "0"))
 PORT = int(os.getenv("PORT", "10000"))
+SHEET_KEY = os.getenv("ANALYTICS_SHEET_KEY")  # один ключ для обеих вкладок
 
-ANALYTICS_SHEET_KEY = os.getenv("ANALYTICS_SHEET_KEY")
-UNCONFIRMED_SHEET_KEY = os.getenv("UNCONFIRMED_SHEET_KEY")
+if not BOT_TOKEN or not SHEET_KEY:
+    raise RuntimeError("BOT_TOKEN или ANALYTICS_SHEET_KEY не задан")
 
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN не задан")
-if not ANALYTICS_SHEET_KEY:
-    raise RuntimeError("ANALYTICS_SHEET_KEY не задан")
-if not UNCONFIRMED_SHEET_KEY:
-    raise RuntimeError("UNCONFIRMED_SHEET_KEY не задан")
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 
-# ================== LOGGING ==================
+# ================== ЛОГИ ==================
 logging.basicConfig(level=logging.INFO)
 
 # ================== BOT ==================
@@ -37,18 +33,19 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # ================== GOOGLE SHEETS ==================
-SCOPES = [
+SCOPES = (
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
-]
+)
 
 service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 credentials = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
 gc = gspread.Client(auth=credentials)
 gc.login()
 
-analytics_sheet = gc.open_by_key(ANALYTICS_SHEET_KEY).sheet1
-unconfirmed_sheet = gc.open_by_key(UNCONFIRMED_SHEET_KEY).sheet1
+# Открываем вкладки
+analytics_sheet = gc.open_by_key(SHEET_KEY).worksheet("leads_main")
+unconfirmed_sheet = gc.open_by_key(SHEET_KEY).worksheet("leads_unconfirmed")
 
 # ================== FSM ==================
 class BookingForm(StatesGroup):
@@ -59,15 +56,14 @@ class BookingForm(StatesGroup):
     income = State()
     time_of_day = State()
 
-# ================== KEYBOARDS ==================
+# ================== КЛАВИАТУРЫ ==================
 role_keyboard = types.ReplyKeyboardMarkup(
     keyboard=[
         [types.KeyboardButton(text="Собственник бизнеса")],
         [types.KeyboardButton(text="CEO / управляющий")],
         [types.KeyboardButton(text="Предприниматель")],
         [types.KeyboardButton(text="Я эксперт/фрилансер")]
-    ],
-    resize_keyboard=True
+    ], resize_keyboard=True
 )
 
 business_keyboard = types.ReplyKeyboardMarkup(
@@ -75,8 +71,7 @@ business_keyboard = types.ReplyKeyboardMarkup(
         [types.KeyboardButton(text="Только запускаю")],
         [types.KeyboardButton(text="Действующий бизнес")],
         [types.KeyboardButton(text="Масштабирую")]
-    ],
-    resize_keyboard=True
+    ], resize_keyboard=True
 )
 
 partner_keyboard = types.ReplyKeyboardMarkup(
@@ -84,18 +79,16 @@ partner_keyboard = types.ReplyKeyboardMarkup(
         [types.KeyboardButton(text="Да")],
         [types.KeyboardButton(text="Нет, но хочу")],
         [types.KeyboardButton(text="Нет")]
-    ],
-    resize_keyboard=True
+    ], resize_keyboard=True
 )
 
-income_keyboard = types.ReplyKeyboardMarkup(
+request_keyboard = types.ReplyKeyboardMarkup(
     keyboard=[
         [types.KeyboardButton(text="Перестать всё контролировать и тащить на себе")],
         [types.KeyboardButton(text="Вернуть страсть и близость, не теряя доход")],
         [types.KeyboardButton(text="Распределить роли, чтобы не конфликтовать")],
         [types.KeyboardButton(text="Выйти на новый уровень дохода без выгорания")]
-    ],
-    resize_keyboard=True
+    ], resize_keyboard=True
 )
 
 time_keyboard = types.ReplyKeyboardMarkup(
@@ -103,8 +96,7 @@ time_keyboard = types.ReplyKeyboardMarkup(
         [types.KeyboardButton(text="Утро")],
         [types.KeyboardButton(text="День")],
         [types.KeyboardButton(text="Вечер")]
-    ],
-    resize_keyboard=True
+    ], resize_keyboard=True
 )
 
 record_keyboard = InlineKeyboardMarkup(
@@ -113,10 +105,10 @@ record_keyboard = InlineKeyboardMarkup(
     ]
 )
 
-# ================== HELPER FUNCTIONS ==================
-def save_structured(sheet_obj, data: dict):
-    """Сохраняет структурированные данные в указанную таблицу."""
-    records = sheet_obj.get_all_records()
+# ================== ФУНКЦИИ ==================
+def save_to_analytics(data: dict):
+    """Сохраняет структурированные данные в leads_main."""
+    records = analytics_sheet.get_all_records()
     ids = [str(r.get("telegram_id", "")) for r in records]
 
     row = [
@@ -136,13 +128,32 @@ def save_structured(sheet_obj, data: dict):
 
     if str(data["telegram_id"]) in ids:
         idx = ids.index(str(data["telegram_id"])) + 2
-        sheet_obj.update(f"A{idx}:L{idx}", [row])
+        analytics_sheet.update(f"A{idx}:L{idx}", [row])
     else:
-        sheet_obj.append_row(row)
+        analytics_sheet.append_row(row)
 
-async def send_admin_full(data: dict):
-    """Отправляет админу полный контекст после подтверждения."""
-    row_text = (
+def save_to_unconfirmed(data: dict):
+    """Сохраняет все ответы в leads_unconfirmed, если статус != confirmed."""
+    if data.get("status") != "confirmed":
+        row = [
+            data.get("telegram_id"),
+            data.get("username", ""),
+            data.get("name", ""),
+            data.get("role", ""),
+            data.get("business_stage", ""),
+            data.get("partner", ""),
+            data.get("income", ""),
+            data.get("time_of_day", ""),
+            data.get("status", ""),
+            data.get("source", ""),
+            data.get("campaign", ""),
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ]
+        unconfirmed_sheet.append_row(row)
+
+async def send_admin_full_message(data: dict):
+    """Отправляет админу все ответы в читаемом виде."""
+    msg = (
         f"❤️ ДИАГНОСТИЧЕСКАЯ СЕССИЯ\n"
         f"«Бизнес как продолжение любви»\n\n"
         f"👤 Имя: {data.get('name','не указано')}\n"
@@ -151,10 +162,10 @@ async def send_admin_full(data: dict):
         f"👥 Партнёр: {data.get('partner','не указано')}\n"
         f"💡 Главная задача: {data.get('income','не указано')}\n"
         f"⏰ Время: {data.get('time_of_day','не указано')}\n"
-        f"🔗 Телеграм: @{data.get('username','не указано')}"
+        f"🔗 Telegram: @{data.get('username','не указано')}"
     )
     if ADMIN_TELEGRAM_ID:
-        await bot.send_message(ADMIN_TELEGRAM_ID, row_text)
+        await bot.send_message(ADMIN_TELEGRAM_ID, msg)
 
 # ================== START ==================
 @dp.message(Command("start"))
@@ -168,7 +179,8 @@ async def start(message: types.Message, state: FSMContext):
         campaign = parts[1] if len(parts) > 1 else ""
 
     await state.update_data(source=source, campaign=campaign)
-    save_structured(analytics_sheet, {
+
+    save_to_analytics({
         "telegram_id": message.from_user.id,
         "username": message.from_user.username,
         "status": "visited",
@@ -177,73 +189,57 @@ async def start(message: types.Message, state: FSMContext):
     })
 
     await message.answer(
-        "Здравствуйте. Программа 'Бизнес как продолжение любви'.\n\n"
-        "Чтобы подготовиться к диагностической сессии, нужно ответить на несколько вопросов.\n"
-        "Как к вам можно обращаться?"
+        "Здравствуйте.\n\n"
+        "Рада, что вы здесь. Программа 'Бизнес как продолжение любви'..."
+        "\nКак к вам можно обращаться?"
     )
     await state.set_state(BookingForm.name)
 
-# ================== QUESTION HANDLERS ==================
+# ================== FSM ==================
 @dp.message(BookingForm.name)
 async def process_name(message: types.Message, state: FSMContext):
     if not re.match(r"^[A-Za-zА-Яа-яЁё\s\-]{2,30}$", message.text):
         await message.answer("Введите корректное имя.")
         return
     await state.update_data(name=message.text)
-    save_structured(analytics_sheet, {
-        "telegram_id": message.from_user.id,
-        "username": message.from_user.username,
-        "name": message.text,
-        "status": "visited"
-    })
+    save_to_analytics({"telegram_id": message.from_user.id, "username": message.from_user.username, "name": message.text, "status": "visited"})
+    save_to_unconfirmed({"telegram_id": message.from_user.id, "username": message.from_user.username, "name": message.text, "status": "needs_followup"})
     await message.answer("Ваша роль в бизнесе:", reply_markup=role_keyboard)
     await state.set_state(BookingForm.role)
 
 @dp.message(BookingForm.role)
 async def process_role(message: types.Message, state: FSMContext):
     await state.update_data(role=message.text)
-    save_structured(analytics_sheet, {
-        "telegram_id": message.from_user.id,
-        "username": message.from_user.username,
-        "role": message.text,
-        "status": "visited"
-    })
+    data = await state.get_data()
+    save_to_analytics({"telegram_id": message.from_user.id, **data, "status": "visited"})
+    save_to_unconfirmed({"telegram_id": message.from_user.id, **data, "status": "needs_followup"})
     await message.answer("Ваш бизнес сейчас:", reply_markup=business_keyboard)
     await state.set_state(BookingForm.business_stage)
 
 @dp.message(BookingForm.business_stage)
 async def process_business(message: types.Message, state: FSMContext):
     await state.update_data(business_stage=message.text)
-    save_structured(analytics_sheet, {
-        "telegram_id": message.from_user.id,
-        "username": message.from_user.username,
-        "business_stage": message.text,
-        "status": "visited"
-    })
+    data = await state.get_data()
+    save_to_analytics({"telegram_id": message.from_user.id, **data, "status": "visited"})
+    save_to_unconfirmed({"telegram_id": message.from_user.id, **data, "status": "needs_followup"})
     await message.answer("Есть ли у вас партнер?", reply_markup=partner_keyboard)
     await state.set_state(BookingForm.partner)
 
 @dp.message(BookingForm.partner)
 async def process_partner(message: types.Message, state: FSMContext):
     await state.update_data(partner=message.text)
-    save_structured(analytics_sheet, {
-        "telegram_id": message.from_user.id,
-        "username": message.from_user.username,
-        "partner": message.text,
-        "status": "visited"
-    })
-    await message.answer("Какую главную задачу вы хотите решить в ближайшие 3 месяца?", reply_markup=income_keyboard)
+    data = await state.get_data()
+    save_to_analytics({"telegram_id": message.from_user.id, **data, "status": "visited"})
+    save_to_unconfirmed({"telegram_id": message.from_user.id, **data, "status": "needs_followup"})
+    await message.answer("Главная задача на ближайшие 3 месяца:", reply_markup=request_keyboard)
     await state.set_state(BookingForm.income)
 
 @dp.message(BookingForm.income)
 async def process_income(message: types.Message, state: FSMContext):
     await state.update_data(income=message.text)
-    save_structured(analytics_sheet, {
-        "telegram_id": message.from_user.id,
-        "username": message.from_user.username,
-        "income": message.text,
-        "status": "visited"
-    })
+    data = await state.get_data()
+    save_to_analytics({"telegram_id": message.from_user.id, **data, "status": "visited"})
+    save_to_unconfirmed({"telegram_id": message.from_user.id, **data, "status": "needs_followup"})
     await message.answer("Удобная половина дня:", reply_markup=time_keyboard)
     await state.set_state(BookingForm.time_of_day)
 
@@ -251,51 +247,46 @@ async def process_income(message: types.Message, state: FSMContext):
 async def process_time(message: types.Message, state: FSMContext):
     await state.update_data(time_of_day=message.text)
     data = await state.get_data()
-    data["telegram_id"] = message.from_user.id
-    data["username"] = message.from_user.username
-    data["status"] = "needs_followup"
+    data.update({
+        "telegram_id": message.from_user.id,
+        "username": message.from_user.username,
+        "status": "needs_followup"
+    })
 
-    # Сохраняем в обе таблицы
-    save_structured(analytics_sheet, data)
-    save_structured(unconfirmed_sheet, data)
+    save_to_analytics(data)
+    save_to_unconfirmed(data)
+    await send_admin_full_message(data)
 
-    await message.answer("Спасибо. Подтвердите, пожалуйста, введенные данные.", reply_markup=record_keyboard)
+    await message.answer(
+        "Спасибо. Подтвердите, пожалуйста, введенные данные.",
+        reply_markup=record_keyboard
+    )
     await state.clear()
 
-# ================== CALLBACK ==================
+# ================== Подтверждение ==================
 @dp.callback_query(lambda c: c.data == "record")
 async def record_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     records = analytics_sheet.get_all_records()
-    ids = [str(r.get("telegram_id", "")) for r in records]
+    ids = [str(r.get("telegram_id","")) for r in records]
+
     if str(user_id) in ids:
         idx = ids.index(str(user_id)) + 2
-        row = records[idx-2]
-        row_data = {
-            "telegram_id": user_id,
-            "username": row.get("username", ""),
-            "name": row.get("name", ""),
-            "role": row.get("role", ""),
-            "business_stage": row.get("business_stage", ""),
-            "partner": row.get("partner", ""),
-            "income": row.get("income", ""),
-            "time_of_day": row.get("time_of_day", ""),
-            "status": "confirmed",
-            "source": row.get("source", ""),
-            "campaign": row.get("campaign", "")
-        }
-        # Обновляем статус
-        save_structured(analytics_sheet, row_data)
-        # Отправляем админу полный контекст
-        await send_admin_full(row_data)
-        # Удаляем из unconfirmed
-        unconfirmed_records = unconfirmed_sheet.get_all_records()
-        unconfirmed_ids = [str(r.get("telegram_id","")) for r in unconfirmed_records]
-        if str(user_id) in unconfirmed_ids:
-            del_idx = unconfirmed_ids.index(str(user_id)) + 2
-            unconfirmed_sheet.delete_row(del_idx)
+        row = analytics_sheet.row_values(idx)
+        row[8] = "confirmed"
+        analytics_sheet.update(f"A{idx}:L{idx}", [row])
 
-    await callback.message.answer("Спасибо. Мы свяжемся с вами для согласования времени.", reply_markup=ReplyKeyboardRemove())
+    # Удаляем или помечаем запись в unconfirmed
+    unconfirmed_records = unconfirmed_sheet.get_all_records()
+    for i, r in enumerate(unconfirmed_records):
+        if str(r.get("telegram_id","")) == str(user_id):
+            unconfirmed_sheet.update(f"I{i+2}", [["confirmed"]])  # только статус
+            break
+
+    await callback.message.answer(
+        "Спасибо. Мы свяжемся с вами для подтверждения и согласования времени.",
+        reply_markup=ReplyKeyboardRemove()
+    )
     await callback.answer()
 
 # ================== FALLBACK ==================
@@ -305,15 +296,9 @@ async def fallback(message: types.Message):
 
 # ================== WEBHOOK ==================
 async def webhook_handler(request):
-    try:
-        data = await request.json()
-        from aiogram.types import Update
-        update = Update.model_validate(data)
-        await dp.feed_update(bot, update)
-        return web.Response(text="ok")
-    except Exception as e:
-        logging.exception("❌ Webhook handler error")
-        return web.Response(text="error", status=500)
+    update = Update.model_validate(await request.json())
+    await dp.feed_update(bot, update)
+    return web.Response(text="ok")
 
 async def healthcheck(request):
     return web.Response(text="Bot is alive")
@@ -321,17 +306,8 @@ async def healthcheck(request):
 # ================== APP ==================
 app = web.Application()
 app.router.add_get("/", healthcheck)
-app.router.add_post(f"/webhook/{BOT_TOKEN}", webhook_handler)
-
-# ================== MAIN ==================
-async def main():
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    logging.info(f"Bot started on port {PORT}")
-    while True:
-        await asyncio.sleep(3600)
+app.router.add_post(WEBHOOK_PATH, webhook_handler)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    logging.info(f"Bot started on port {PORT}")
+    web.run_app(app, host="0.0.0.0", port=PORT)
