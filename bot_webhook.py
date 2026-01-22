@@ -362,15 +362,20 @@ async def confirm(callback: types.CallbackQuery):
     await callback.answer()
 
 # ================== WEBHOOK ==================
+#async def webhook_handler(request):
+#    try:
+#        data = await request.json()
+#        update = Update.model_validate(data)
+#        await dp.feed_update(bot, update)
+#        return web.Response(text="ok")
+#    except Exception:
+#        logging.exception("❌ Webhook handler error")
+#        return web.Response(text="error", status=500)
+
 async def webhook_handler(request):
-    try:
-        data = await request.json()
-        update = Update.model_validate(data)
-        await dp.feed_update(bot, update)
-        return web.Response(text="ok")
-    except Exception:
-        logging.exception("❌ Webhook handler error")
-        return web.Response(text="error", status=500)
+    print("🔥 WEBHOOK CALLED")
+    return web.Response(text="ok")
+
 
 async def healthcheck(request):
     return web.Response(text="Bot is alive")
