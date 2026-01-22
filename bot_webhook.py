@@ -119,7 +119,6 @@ record_keyboard = InlineKeyboardMarkup(
 # ================== ФУНКЦИИ СОХРАНЕНИЯ ==================
 
 def find_row(sheet, telegram_id):
-    """Возвращает индекс строки пользователя в таблице, если есть"""
     records = sheet.get_all_records()
     for i, r in enumerate(records, start=2):
         if str(r.get("telegram_id")) == str(telegram_id):
@@ -127,10 +126,8 @@ def find_row(sheet, telegram_id):
     return None
 
 def save_to_analytics(data: dict):
-    """Сохраняем или обновляем данные в основной таблице"""
     row_idx = find_row(analytics_sheet, data["telegram_id"])
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     row_data = [
         data.get("telegram_id", ""),
         data.get("username", ""),
@@ -146,14 +143,12 @@ def save_to_analytics(data: dict):
         data.get("started_at", now),
         data.get("confirmed_at", "")
     ]
-
     if row_idx:
         analytics_sheet.update(f"A{row_idx}:M{row_idx}", [row_data])
     else:
         analytics_sheet.append_row(row_data)
 
 def save_to_unconfirmed(data: dict):
-    """Сохраняем или обновляем данные в временной таблице"""
     row_idx = find_row(unconfirmed_sheet, data["telegram_id"])
     row_data = [
         data.get("telegram_id", ""),
@@ -166,7 +161,7 @@ def save_to_unconfirmed(data: dict):
         data.get("time_of_day", ""),
         data.get("source", ""),
         data.get("campaign", ""),
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),  # last_admin_sent
     ]
     if row_idx:
         unconfirmed_sheet.update(f"A{row_idx}:K{row_idx}", [row_data])
@@ -194,8 +189,7 @@ async def start(message: types.Message, state: FSMContext):
         "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     })
 
-    await message.answer(
-        "Здравствуйте.\n\n"
+    await message.answer("Здравствуйте.\n\n"
         "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' "
         "- это про то, как быть сильной, не ослабляя партнёра. "
         "И как создать дело, которое укрепляет отношения, а не разрушает их.\n\n"
@@ -206,8 +200,8 @@ async def start(message: types.Message, state: FSMContext):
         "Чтобы подготовиться и провести сессию максимально эффективно, "
         "мне важно узнать о вас немного больше. "
         "Ответьте, пожалуйста, на несколько вопросов - это займёт 2-3 минуты.\n\n"
-        "Как к вам можно обращаться?"
-    )
+        "Как к вам можно обращаться?")
+
     await state.set_state(BookingForm.name)
 
 # ================== ОБРАБОТКА ВОПРОСОВ ==================
@@ -253,7 +247,6 @@ async def process_time(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
     user_id = message.from_user.id
 
-    # Сохраняем в основную таблицу
     analytics_data = {
         "telegram_id": user_id,
         "username": message.from_user.username,
@@ -269,10 +262,16 @@ async def process_time(message: types.Message, state: FSMContext):
         "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     save_to_analytics(analytics_data)
-    save_to_unconfirmed(analytics_data)
 
-    # Отправка админу
-    if ADMIN_TELEGRAM_ID:
+    # --- проверка интервала 10 мин для админа ---
+    last_sent_str = user_data.get("last_admin_sent")
+    send_admin = True
+    if last_sent_str:
+        last_sent = datetime.strptime(last_sent_str, "%Y-%m-%d %H:%M:%S")
+        if datetime.now() - last_sent < timedelta(minutes=10):
+            send_admin = False
+
+    if send_admin and ADMIN_TELEGRAM_ID:
         msg = (
             f"❤️ ДИАГНОСТИЧЕСКАЯ СЕССИЯ\n"
             f"«Бизнес как продолжение любви»\n\n"
@@ -285,6 +284,8 @@ async def process_time(message: types.Message, state: FSMContext):
             f"💻 Telegram: @{analytics_data['username']}\n"
         )
         asyncio.create_task(bot.send_message(ADMIN_TELEGRAM_ID, msg))
+        user_data["last_admin_sent"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        save_to_unconfirmed(user_data)
 
     await message.answer(
         "Спасибо. Подтвердите, пожалуйста, введенные данные.",
@@ -298,11 +299,9 @@ async def record_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     row_idx = find_row(analytics_sheet, user_id)
     if row_idx:
-        # Обновляем статус и время подтверждения
-        analytics_sheet.update_cell(row_idx, 9, "confirmed")  # status
-        analytics_sheet.update_cell(row_idx, 13, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))  # confirmed_at
+        analytics_sheet.update_cell(row_idx, 9, "confirmed")
+        analytics_sheet.update_cell(row_idx, 13, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-    # Удаляем запись из временной таблицы
     unconfirmed_idx = find_row(unconfirmed_sheet, user_id)
     if unconfirmed_idx:
         unconfirmed_sheet.delete_row(unconfirmed_idx)
