@@ -384,6 +384,19 @@ app = web.Application()
 app.router.add_get("/", healthcheck)
 app.router.add_post(WEBHOOK_PATH, webhook_handler)
 
-if __name__ == "__main__":
+async def main():
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+
     logging.info(f"Bot started on port {PORT}")
-    web.run_app(app, host="0.0.0.0", port=PORT)
+
+    # держим процесс живым
+    while True:
+        await asyncio.sleep(3600)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
