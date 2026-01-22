@@ -372,9 +372,40 @@ async def confirm(callback: types.CallbackQuery):
 #        logging.exception("❌ Webhook handler error")
 #        return web.Response(text="error", status=500)
 
+#async def webhook_handler(request):
+#    print("🔥 WEBHOOK CALLED")
+#    return web.Response(text="ok")
+
 async def webhook_handler(request):
-    print("🔥 WEBHOOK CALLED")
-    return web.Response(text="ok")
+    try:
+        # Шаг 1: просто распарсить json
+        data = await request.json()
+        print("🔥 WEBHOOK CALLED")
+        print("📥 Incoming JSON:", data)
+
+        # Шаг 2: валидировать апдейт
+        try:
+            update = Update.model_validate(data)
+            print("✅ Update validated")
+        except Exception as e:
+            print("❌ Update validation failed:", e)
+            return web.Response(text="update validation error", status=400)
+
+        # Шаг 3: передать апдейт aiogram
+        try:
+            await dp.feed_update(bot, update)
+            print("✅ Update processed by dispatcher")
+        except Exception as e:
+            print("❌ Dispatcher failed:", e)
+            return web.Response(text="dispatcher error", status=500)
+
+        # Шаг 4: всё ок
+        return web.Response(text="ok")
+
+    except Exception as e:
+        # Любая ошибка при парсинге json или запросе
+        print("❌ Webhook handler error:", e)
+        return web.Response(text="handler error", status=500)
 
 
 async def healthcheck(request):
