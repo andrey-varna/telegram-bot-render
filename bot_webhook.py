@@ -18,6 +18,8 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     ReplyKeyboardRemove
 )
+import logging
+logging.basicConfig(level=logging.ERROR)
 
 # ================== КОНФИГУРАЦИЯ ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -361,9 +363,14 @@ async def confirm(callback: types.CallbackQuery):
 
 # ================== WEBHOOK ==================
 async def webhook_handler(request):
-    update = Update.model_validate(await request.json())
-    await dp.feed_update(bot, update)
-    return web.Response(text="ok")
+    try:
+        data = await request.json()
+        update = Update.model_validate(data)
+        await dp.feed_update(bot, update)
+        return web.Response(text="ok")
+    except Exception:
+        logging.exception("❌ Webhook handler error")
+        return web.Response(text="error", status=500)
 
 async def healthcheck(request):
     return web.Response(text="Bot is alive")
