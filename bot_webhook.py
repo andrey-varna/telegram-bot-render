@@ -16,10 +16,11 @@ from aiogram.types import Update, InlineKeyboardButton, InlineKeyboardMarkup, Re
 
 # ================== КОНФИГУРАЦИЯ ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-MAIN_SHEET_KEY = os.getenv("MAIN_SHEET_KEY")  # leads_main
-UNCONFIRMED_SHEET_KEY = os.getenv("UNCONFIRMED_SHEET_KEY")  # leads_unconfirmed
+MAIN_SHEET_KEY = os.getenv("MAIN_SHEET_KEY")
+UNCONFIRMED_SHEET_KEY = os.getenv("UNCONFIRMED_SHEET_KEY")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "0"))
 PORT = int(os.getenv("PORT", "10000"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 if not BOT_TOKEN or not MAIN_SHEET_KEY or not UNCONFIRMED_SHEET_KEY or "GOOGLE_SERVICE_ACCOUNT_JSON" not in os.environ:
     raise RuntimeError("BOT_TOKEN или ключи таблиц не заданы")
@@ -113,48 +114,116 @@ confirm_keyboard = InlineKeyboardMarkup(
 )
 
 
-# ================== ФУНКЦИИ ==================
-def save_main_user(data: dict):
-    """Сохраняет или обновляет пользователя в основной таблице."""
+# ================== ФУНКЦИИ ДЛЯ РАБОТЫ С ТАБЛИЦАМИ ==================
+
+def create_main_lead(data: dict):
+    """
+    Создаёт запись в leads_main ТОЛЬКО при первом ответе (имя).
+    Столбцы: telegram_id, username, name, role, business_stage, partner,
+             time_of_day, status, source, campaign, started_at, confirmed_at
+    """
     try:
         records = main_sheet.get_all_records()
         ids = [str(r.get("telegram_id", "")) for r in records]
 
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if str(data["telegram_id"]) in ids:
+            logging.info(f"Лид {data['telegram_id']} уже существует в main, пропускаем создание")
+            return
 
         row = [
             data.get("telegram_id"),
             data.get("username", ""),
             data.get("name", ""),
-            data.get("role", ""),
-            data.get("business_stage", ""),
-            data.get("partner", ""),
-            data.get("time_of_day", ""),
-            data.get("status", "needs_followup"),
+            "",  # role - пока пусто
+            "",  # business_stage - пока пусто
+            "",  # partner - пока пусто
+            "",  # time_of_day - пока пусто
+            "started",  # status
             data.get("source", ""),
             data.get("campaign", ""),
-            data.get("started_at", now_str),
-            data.get("confirmed_at", "")
+            data.get("started_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            ""  # confirmed_at - пока пусто
         ]
 
-        if str(data["telegram_id"]) in ids:
-            idx = ids.index(str(data["telegram_id"])) + 2
-            main_sheet.update(f"A{idx}:L{idx}", [row])
-            logging.info(f"Обновлена запись в main_sheet для ID {data['telegram_id']}, строка {idx}")
-        else:
-            main_sheet.append_row(row)
-            logging.info(f"Добавлена новая запись в main_sheet для ID {data['telegram_id']}")
+        main_sheet.append_row(row)
+        logging.info(f"✅ Создана запись в leads_main для {data['telegram_id']}")
     except Exception as e:
-        logging.error(f"Ошибка при сохранении в main_sheet: {e}", exc_info=True)
+        logging.error(f"❌ Ошибка создания в leads_main: {e}", exc_info=True)
 
 
-def save_unconfirmed_user(data: dict):
-    """Сохраняет или обновляет пользователя во временной таблице для дожима."""
+def update_main_lead_confirmed(telegram_id: int):
+    """
+    Обновляет leads_main ТОЛЬКО при подтверждении.
+    Меняет status на 'confirmed' и проставляет confirmed_at.
+    """
+    try:
+        records = main_sheet.get_all_records()
+        ids = [str(r.get("telegram_id", "")) for r in records]
+
+        if str(telegram_id) not in ids:
+            logging.error(f"❌ Лид {telegram_id} не найден в leads_main")
+            return
+
+        idx = ids.index(str(telegram_id)) + 2
+        confirmed_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Обновляем только status (H) и confirmed_at (L)
+        main_sheet.update_acell(f"H{idx}", "confirmed")
+        main_sheet.update_acell(f"L{idx}", confirmed_time)
+
+        logging.info(f"✅ Обновлён статус в leads_main для {telegram_id} → confirmed")
+    except Exception as e:
+        logging.error(f"❌ Ошибка обновления leads_main: {e}", exc_info=True)
+
+
+def create_unconfirmed_lead(data: dict):
+    """
+    Создаёт запись в leads_unconfirmed при первом ответе (имя).
+    Столбцы: telegram_id, username, source, campaign, name, role,
+             business_stage, partner, main_task, time_of_day, last_activity_at
+    """
     try:
         records = unconfirmed_sheet.get_all_records()
         ids = [str(r.get("telegram_id", "")) for r in records]
 
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if str(data["telegram_id"]) in ids:
+            logging.info(f"Лид {data['telegram_id']} уже в unconfirmed, пропускаем создание")
+            return
+
+        row = [
+            data.get("telegram_id"),
+            data.get("username", ""),
+            data.get("source", ""),
+            data.get("campaign", ""),
+            data.get("name", ""),
+            "",  # role
+            "",  # business_stage
+            "",  # partner
+            "",  # main_task
+            "",  # time_of_day
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # last_activity_at
+        ]
+
+        unconfirmed_sheet.append_row(row)
+        logging.info(f"✅ Создана запись в leads_unconfirmed для {data['telegram_id']}")
+    except Exception as e:
+        logging.error(f"❌ Ошибка создания в leads_unconfirmed: {e}", exc_info=True)
+
+
+def update_unconfirmed_lead(data: dict):
+    """
+    Обновляет leads_unconfirmed на КАЖДОМ шаге опроса.
+    Обновляет все поля + last_activity_at.
+    """
+    try:
+        records = unconfirmed_sheet.get_all_records()
+        ids = [str(r.get("telegram_id", "")) for r in records]
+
+        if str(data["telegram_id"]) not in ids:
+            logging.error(f"❌ Лид {data['telegram_id']} не найден в unconfirmed")
+            return
+
+        idx = ids.index(str(data["telegram_id"])) + 2
 
         row = [
             data.get("telegram_id"),
@@ -167,37 +236,37 @@ def save_unconfirmed_user(data: dict):
             data.get("partner", ""),
             data.get("main_task", ""),
             data.get("time_of_day", ""),
-            now_str
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ]
 
-        if str(data["telegram_id"]) in ids:
-            idx = ids.index(str(data["telegram_id"])) + 2
-            unconfirmed_sheet.update(f"A{idx}:K{idx}", [row])
-            logging.info(f"Обновлена запись в unconfirmed_sheet для ID {data['telegram_id']}, строка {idx}")
-        else:
-            unconfirmed_sheet.append_row(row)
-            logging.info(f"Добавлена новая запись в unconfirmed_sheet для ID {data['telegram_id']}")
+        unconfirmed_sheet.update(f"A{idx}:K{idx}", [row])
+        logging.info(f"✅ Обновлена запись в leads_unconfirmed для {data['telegram_id']}")
     except Exception as e:
-        logging.error(f"Ошибка при сохранении в unconfirmed_sheet: {e}", exc_info=True)
+        logging.error(f"❌ Ошибка обновления leads_unconfirmed: {e}", exc_info=True)
 
 
-def delete_unconfirmed_user(telegram_id):
-    """Удаляет запись из временной таблицы."""
+def delete_unconfirmed_lead(telegram_id: int):
+    """Удаляет запись из leads_unconfirmed при подтверждении."""
     try:
         records = unconfirmed_sheet.get_all_records()
         ids = [str(r.get("telegram_id", "")) for r in records]
-        if str(telegram_id) in ids:
-            idx = ids.index(str(telegram_id)) + 2
-            unconfirmed_sheet.delete_rows(idx)
-            logging.info(f"Удалена запись из unconfirmed_sheet для ID {telegram_id}, строка {idx}")
+
+        if str(telegram_id) not in ids:
+            logging.warning(f"⚠️ Лид {telegram_id} не найден в unconfirmed для удаления")
+            return
+
+        idx = ids.index(str(telegram_id)) + 2
+        unconfirmed_sheet.delete_rows(idx)
+        logging.info(f"✅ Удалена запись из leads_unconfirmed для {telegram_id}")
     except Exception as e:
-        logging.error(f"Ошибка при удалении из unconfirmed_sheet: {e}")
+        logging.error(f"❌ Ошибка удаления из leads_unconfirmed: {e}", exc_info=True)
 
 
 # ================== START ==================
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
     await state.clear()
+
     args = message.text.split(" ", 1)
     source, campaign = "organic", ""
     if len(args) > 1:
@@ -236,10 +305,14 @@ async def process_name(message: types.Message, state: FSMContext):
     if not re.match(r"^[A-Za-zА-Яа-яЁё\s\-]{2,30}$", message.text):
         await message.answer("Введите корректное имя.")
         return
+
     await state.update_data(name=message.text)
     data = await state.get_data()
-    save_main_user({**data, "status": "started"})
-    save_unconfirmed_user(data)
+
+    # ✅ ТОЛЬКО ЗДЕСЬ создаём записи в обеих таблицах
+    create_main_lead(data)
+    create_unconfirmed_lead(data)
+
     await message.answer("Ваша роль в бизнесе:", reply_markup=role_keyboard)
     await state.set_state(BookingForm.role)
 
@@ -248,8 +321,10 @@ async def process_name(message: types.Message, state: FSMContext):
 async def process_role(message: types.Message, state: FSMContext):
     await state.update_data(role=message.text)
     data = await state.get_data()
-    save_main_user({**data, "status": "needs_followup"})
-    save_unconfirmed_user(data)
+
+    # ✅ Обновляем ТОЛЬКО unconfirmed
+    update_unconfirmed_lead(data)
+
     await message.answer("Ваш бизнес сейчас:", reply_markup=business_keyboard)
     await state.set_state(BookingForm.business_stage)
 
@@ -258,8 +333,10 @@ async def process_role(message: types.Message, state: FSMContext):
 async def process_business(message: types.Message, state: FSMContext):
     await state.update_data(business_stage=message.text)
     data = await state.get_data()
-    save_main_user({**data, "status": "needs_followup"})
-    save_unconfirmed_user(data)
+
+    # ✅ Обновляем ТОЛЬКО unconfirmed
+    update_unconfirmed_lead(data)
+
     await message.answer("Есть ли у вас партнер?", reply_markup=partner_keyboard)
     await state.set_state(BookingForm.partner)
 
@@ -268,8 +345,10 @@ async def process_business(message: types.Message, state: FSMContext):
 async def process_partner(message: types.Message, state: FSMContext):
     await state.update_data(partner=message.text)
     data = await state.get_data()
-    save_main_user({**data, "status": "needs_followup"})
-    save_unconfirmed_user(data)
+
+    # ✅ Обновляем ТОЛЬКО unconfirmed
+    update_unconfirmed_lead(data)
+
     await message.answer(
         "И последний, самый важный вопрос:\nКакую главную задачу вы хотите решить в ближайшие 3 месяца?",
         reply_markup=task_keyboard
@@ -281,8 +360,10 @@ async def process_partner(message: types.Message, state: FSMContext):
 async def process_task(message: types.Message, state: FSMContext):
     await state.update_data(main_task=message.text)
     data = await state.get_data()
-    save_main_user({**data, "status": "needs_followup"})
-    save_unconfirmed_user(data)
+
+    # ✅ Обновляем ТОЛЬКО unconfirmed
+    update_unconfirmed_lead(data)
+
     await message.answer("Удобная половина дня:", reply_markup=time_keyboard)
     await state.set_state(BookingForm.time_of_day)
 
@@ -291,8 +372,9 @@ async def process_task(message: types.Message, state: FSMContext):
 async def process_time(message: types.Message, state: FSMContext):
     await state.update_data(time_of_day=message.text)
     data = await state.get_data()
-    save_main_user({**data, "status": "needs_followup"})
-    save_unconfirmed_user(data)
+
+    # ✅ Обновляем ТОЛЬКО unconfirmed
+    update_unconfirmed_lead(data)
 
     # Формируем сводку для пользователя
     summary = (
@@ -313,23 +395,19 @@ async def process_time(message: types.Message, state: FSMContext):
 @dp.callback_query(lambda c: c.data == "record")
 async def confirm_record(callback: types.CallbackQuery, state: FSMContext):
     telegram_id = callback.from_user.id
-
-    # Получаем данные из state
     data = await state.get_data()
 
     if not data:
         await callback.answer("Ошибка: данные не найдены. Пожалуйста, начните заново с /start", show_alert=True)
         return
 
-    # Обновляем статус в основной таблице
-    confirmed_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    data_confirmed = {**data, "status": "confirmed", "confirmed_at": confirmed_time}
-    save_main_user(data_confirmed)
+    # ✅ Обновляем leads_main (status → confirmed, confirmed_at)
+    update_main_lead_confirmed(telegram_id)
 
-    # Удаляем из временной таблицы
-    delete_unconfirmed_user(telegram_id)
+    # ✅ Удаляем из leads_unconfirmed
+    delete_unconfirmed_lead(telegram_id)
 
-    # Формируем сообщение админу (дублируем данные из state)
+    # Формируем сообщение админу
     text_admin = (
         f"❤️ ДИАГНОСТИЧЕСКАЯ СЕССИЯ\n"
         f"«Бизнес как продолжение любви»\n\n"
@@ -355,11 +433,11 @@ async def confirm_record(callback: types.CallbackQuery, state: FSMContext):
     if ADMIN_TELEGRAM_ID:
         try:
             await bot.send_message(ADMIN_TELEGRAM_ID, text_admin)
-            logging.info(f"Отправлено сообщение админу для пользователя {telegram_id}")
+            logging.info(f"✅ Отправлено сообщение админу для {telegram_id}")
         except Exception as e:
-            logging.error(f"Ошибка отправки сообщения админу: {e}")
+            logging.error(f"❌ Ошибка отправки сообщения админу: {e}")
 
-    # Теперь можно очистить state
+    # Очищаем state
     await state.clear()
 
 
@@ -372,11 +450,12 @@ async def fallback(message: types.Message):
 # ================== WEBHOOK ==================
 async def webhook_handler(request):
     try:
-        update = Update.model_validate(await request.json())
+        json_data = await request.json()
+        update = Update.model_validate(json_data)
         await dp.feed_update(bot, update)
         return web.Response(text="ok")
     except Exception as e:
-        logging.error(f"Ошибка обработки webhook: {e}")
+        logging.error(f"❌ Ошибка обработки webhook: {e}", exc_info=True)
         return web.Response(text="error", status=500)
 
 
@@ -389,6 +468,21 @@ app = web.Application()
 app.router.add_get("/", healthcheck)
 app.router.add_post(WEBHOOK_PATH, webhook_handler)
 
+
+async def on_startup():
+    """Устанавливает webhook при запуске приложения."""
+    if WEBHOOK_URL:
+        webhook_url = f"{WEBHOOK_URL}{WEBHOOK_PATH}"
+        await bot.set_webhook(webhook_url)
+        logging.info(f"✅ Webhook установлен: {webhook_url}")
+    else:
+        logging.warning("⚠️ WEBHOOK_URL не задан - webhook не установлен!")
+
+
 if __name__ == "__main__":
-    logging.info(f"Bot started on port {PORT}")
+    # Устанавливаем webhook перед запуском
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(on_startup())
+
+    logging.info(f"🚀 Bot started on port {PORT}")
     web.run_app(app, host="0.0.0.0", port=PORT)
