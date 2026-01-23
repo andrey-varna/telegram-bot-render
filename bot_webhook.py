@@ -42,7 +42,7 @@ SCOPES = [
 service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 credentials = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
 gc = gspread.Client(auth=credentials)
-gc.login()  # авторизация
+gc.login()
 
 main_sheet = gc.open_by_key(MAIN_SHEET_KEY).sheet1
 unconfirmed_sheet = gc.open_by_key(UNCONFIRMED_SHEET_KEY).sheet1
@@ -116,73 +116,82 @@ confirm_keyboard = InlineKeyboardMarkup(
 # ================== ФУНКЦИИ ==================
 def save_main_user(data: dict):
     """Сохраняет или обновляет пользователя в основной таблице."""
-    records = main_sheet.get_all_records()
-    ids = [str(r.get("telegram_id", "")) for r in records]
+    try:
+        records = main_sheet.get_all_records()
+        ids = [str(r.get("telegram_id", "")) for r in records]
 
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Порядок колонок: A-L (12 колонок)
-    # A: telegram_id, B: username, C: name, D: role, E: business_stage,
-    # F: partner, G: time_of_day, H: status, I: source, J: campaign,
-    # K: started_at, L: confirmed_at
-    row = [
-        str(data.get("telegram_id", "")),
-        data.get("username", ""),
-        data.get("name", ""),
-        data.get("role", ""),
-        data.get("business_stage", ""),
-        data.get("partner", ""),
-        data.get("time_of_day", ""),
-        data.get("status", "needs_followup"),
-        data.get("source", ""),
-        data.get("campaign", ""),
-        data.get("started_at", now_str),
-        data.get("confirmed_at", "")
-    ]
+        row = [
+            data.get("telegram_id"),
+            data.get("username", ""),
+            data.get("name", ""),
+            data.get("role", ""),
+            data.get("business_stage", ""),
+            data.get("partner", ""),
+            data.get("time_of_day", ""),
+            data.get("status", "needs_followup"),
+            data.get("source", ""),
+            data.get("campaign", ""),
+            data.get("started_at", now_str),
+            data.get("confirmed_at", "")
+        ]
 
-    if str(data["telegram_id"]) in ids:
-        idx = ids.index(str(data["telegram_id"])) + 2
-        main_sheet.update(f"A{idx}:L{idx}", [row])
-    else:
-        main_sheet.append_row(row)
+        if str(data["telegram_id"]) in ids:
+            idx = ids.index(str(data["telegram_id"])) + 2
+            main_sheet.update(f"A{idx}:L{idx}", [row])
+            logging.info(f"Обновлена запись в main_sheet для ID {data['telegram_id']}, строка {idx}")
+        else:
+            main_sheet.append_row(row)
+            logging.info(f"Добавлена новая запись в main_sheet для ID {data['telegram_id']}")
+    except Exception as e:
+        logging.error(f"Ошибка при сохранении в main_sheet: {e}", exc_info=True)
 
 
 def save_unconfirmed_user(data: dict):
     """Сохраняет или обновляет пользователя во временной таблице для дожима."""
-    records = unconfirmed_sheet.get_all_records()
-    ids = [str(r.get("telegram_id", "")) for r in records]
+    try:
+        records = unconfirmed_sheet.get_all_records()
+        ids = [str(r.get("telegram_id", "")) for r in records]
 
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Порядок колонок: A-K (11 колонок)
-    row = [
-        str(data.get("telegram_id", "")),
-        data.get("username", ""),
-        data.get("source", ""),
-        data.get("campaign", ""),
-        data.get("name", ""),
-        data.get("role", ""),
-        data.get("business_stage", ""),
-        data.get("partner", ""),
-        data.get("main_task", ""),
-        data.get("time_of_day", ""),
-        now_str
-    ]
+        row = [
+            data.get("telegram_id"),
+            data.get("username", ""),
+            data.get("source", ""),
+            data.get("campaign", ""),
+            data.get("name", ""),
+            data.get("role", ""),
+            data.get("business_stage", ""),
+            data.get("partner", ""),
+            data.get("main_task", ""),
+            data.get("time_of_day", ""),
+            now_str
+        ]
 
-    if str(data["telegram_id"]) in ids:
-        idx = ids.index(str(data["telegram_id"])) + 2
-        unconfirmed_sheet.update(f"A{idx}:K{idx}", [row])
-    else:
-        unconfirmed_sheet.append_row(row)
+        if str(data["telegram_id"]) in ids:
+            idx = ids.index(str(data["telegram_id"])) + 2
+            unconfirmed_sheet.update(f"A{idx}:K{idx}", [row])
+            logging.info(f"Обновлена запись в unconfirmed_sheet для ID {data['telegram_id']}, строка {idx}")
+        else:
+            unconfirmed_sheet.append_row(row)
+            logging.info(f"Добавлена новая запись в unconfirmed_sheet для ID {data['telegram_id']}")
+    except Exception as e:
+        logging.error(f"Ошибка при сохранении в unconfirmed_sheet: {e}", exc_info=True)
 
 
 def delete_unconfirmed_user(telegram_id):
     """Удаляет запись из временной таблицы."""
-    records = unconfirmed_sheet.get_all_records()
-    ids = [str(r.get("telegram_id", "")) for r in records]
-    if str(telegram_id) in ids:
-        idx = ids.index(str(telegram_id)) + 2
-        unconfirmed_sheet.delete_rows(idx)
+    try:
+        records = unconfirmed_sheet.get_all_records()
+        ids = [str(r.get("telegram_id", "")) for r in records]
+        if str(telegram_id) in ids:
+            idx = ids.index(str(telegram_id)) + 2
+            unconfirmed_sheet.delete_rows(idx)
+            logging.info(f"Удалена запись из unconfirmed_sheet для ID {telegram_id}, строка {idx}")
+    except Exception as e:
+        logging.error(f"Ошибка при удалении из unconfirmed_sheet: {e}")
 
 
 # ================== START ==================
@@ -298,7 +307,6 @@ async def process_time(message: types.Message, state: FSMContext):
     )
 
     await message.answer(summary, reply_markup=confirm_keyboard)
-    # НЕ очищаем state здесь - данные нужны для callback
 
 
 # ================== CALLBACK ==================
@@ -309,67 +317,50 @@ async def confirm_record(callback: types.CallbackQuery, state: FSMContext):
     # Получаем данные из state
     data = await state.get_data()
 
-    # Если данных нет в state (например, бот перезапустился), пытаемся взять из таблицы
-    if not data:
-        records = main_sheet.get_all_records()
-        for record in records:
-            if str(record.get("telegram_id", "")) == str(telegram_id):
-                data = record
-                break
-
     if not data:
         await callback.answer("Ошибка: данные не найдены. Пожалуйста, начните заново с /start", show_alert=True)
         return
 
     # Обновляем статус в основной таблице
-    records = main_sheet.get_all_records()
-    ids = [str(r.get("telegram_id", "")) for r in records]
+    confirmed_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    data_confirmed = {**data, "status": "confirmed", "confirmed_at": confirmed_time}
+    save_main_user(data_confirmed)
 
-    if str(telegram_id) in ids:
-        idx = ids.index(str(telegram_id)) + 2
+    # Удаляем из временной таблицы
+    delete_unconfirmed_user(telegram_id)
 
-        # Обновляем только нужные ячейки: H (status) и L (confirmed_at)
-        confirmed_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        main_sheet.update_acell(f"H{idx}", "confirmed")  # status
-        main_sheet.update_acell(f"L{idx}", confirmed_time)  # confirmed_at
+    # Формируем сообщение админу (дублируем данные из state)
+    text_admin = (
+        f"❤️ ДИАГНОСТИЧЕСКАЯ СЕССИЯ\n"
+        f"«Бизнес как продолжение любви»\n\n"
+        f"👤 Имя: {data.get('name', 'не указано')}\n"
+        f"🎯 Роль: {data.get('role', 'не указано')}\n"
+        f"💼 Бизнес: {data.get('business_stage', 'не указано')}\n"
+        f"👥 Партнёр: {data.get('partner', 'не указано')}\n"
+        f"💡 Главная задача: {data.get('main_task', 'не указано')}\n"
+        f"⏰ Время: {data.get('time_of_day', 'не указано')}\n"
+        f"Telegram: @{data.get('username', 'не указан')}"
+    )
 
-        # Получаем актуальные данные для сообщения админу
-        updated_row = main_sheet.row_values(idx)
-        text_admin = (
-            f"❤️ ДИАГНОСТИЧЕСКАЯ СЕССИЯ\n"
-            f"«Бизнес как продолжение любви»\n\n"
-            f"👤 Имя: {updated_row[2]}\n"
-            f"🎯 Роль: {updated_row[3]}\n"
-            f"💼 Бизнес: {updated_row[4]}\n"
-            f"👥 Партнёр: {updated_row[5]}\n"
-            f"💡 Главная задача: {data.get('main_task', 'не указано')}\n"
-            f"⏰ Время: {updated_row[6]}\n"
-            f"Telegram: @{updated_row[1] if updated_row[1] else 'не указан'}"
-        )
+    # Сначала отвечаем на callback
+    await callback.answer()
 
-        # Удаляем из временной таблицы
-        delete_unconfirmed_user(telegram_id)
+    # Отправляем сообщение пользователю
+    await callback.message.answer(
+        "Спасибо! Ваши данные подтверждены. Мы свяжемся с вами для согласования времени диагностической сессии.",
+        reply_markup=ReplyKeyboardRemove()
+    )
 
-        # Сначала отвечаем на callback
-        await callback.answer()
+    # Отправляем уведомление админу
+    if ADMIN_TELEGRAM_ID:
+        try:
+            await bot.send_message(ADMIN_TELEGRAM_ID, text_admin)
+            logging.info(f"Отправлено сообщение админу для пользователя {telegram_id}")
+        except Exception as e:
+            logging.error(f"Ошибка отправки сообщения админу: {e}")
 
-        # Отправляем сообщение пользователю
-        await callback.message.answer(
-            "Спасибо! Ваши данные подтверждены. Мы свяжемся с вами для согласования времени диагностической сессии.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-
-        # Отправляем уведомление админу
-        if ADMIN_TELEGRAM_ID:
-            try:
-                await bot.send_message(ADMIN_TELEGRAM_ID, text_admin)
-            except Exception as e:
-                logging.error(f"Ошибка отправки сообщения админу: {e}")
-
-        # Теперь можно очистить state
-        await state.clear()
-    else:
-        await callback.answer("Ошибка: запись не найдена в таблице", show_alert=True)
+    # Теперь можно очистить state
+    await state.clear()
 
 
 # ================== FALLBACK ==================
