@@ -284,23 +284,49 @@ async def process_time(message: types.Message, state: FSMContext):
     data = await state.get_data()
     save_main_user({**data, "status": "needs_followup"})
     save_unconfirmed_user(data)
-    await message.answer(
-        "Спасибо. Подтвердите, пожалуйста, введенные данные.",
-        reply_markup=confirm_keyboard
+
+    # Формируем сводку для пользователя
+    summary = (
+        f"📋 Проверьте ваши данные:\n\n"
+        f"👤 Имя: {data.get('name')}\n"
+        f"🎯 Роль: {data.get('role')}\n"
+        f"💼 Бизнес: {data.get('business_stage')}\n"
+        f"👥 Партнёр: {data.get('partner')}\n"
+        f"💡 Главная задача: {data.get('main_task')}\n"
+        f"⏰ Удобное время: {data.get('time_of_day')}\n\n"
+        f"Всё верно?"
     )
-    await state.clear()
+
+    await message.answer(summary, reply_markup=confirm_keyboard)
+    # НЕ очищаем state здесь - данные нужны для callback
 
 
 # ================== CALLBACK ==================
 @dp.callback_query(lambda c: c.data == "record")
-async def confirm_record(callback: types.CallbackQuery):
+async def confirm_record(callback: types.CallbackQuery, state: FSMContext):
     telegram_id = callback.from_user.id
+
+    # Получаем данные из state
+    data = await state.get_data()
+
+    # Если данных нет в state (например, бот перезапустился), пытаемся взять из таблицы
+    if not data:
+        records = main_sheet.get_all_records()
+        for record in records:
+            if str(record.get("telegram_id", "")) == str(telegram_id):
+                data = record
+                break
+
+    if not data:
+        await callback.answer("Ошибка: данные не найдены. Пожалуйста, начните заново с /start", show_alert=True)
+        return
+
+    # Обновляем статус в основной таблице
     records = main_sheet.get_all_records()
     ids = [str(r.get("telegram_id", "")) for r in records]
 
     if str(telegram_id) in ids:
         idx = ids.index(str(telegram_id)) + 2
-        row = main_sheet.row_values(idx)
 
         # Обновляем только нужные ячейки: H (status) и L (confirmed_at)
         confirmed_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -316,6 +342,7 @@ async def confirm_record(callback: types.CallbackQuery):
             f"🎯 Роль: {updated_row[3]}\n"
             f"💼 Бизнес: {updated_row[4]}\n"
             f"👥 Партнёр: {updated_row[5]}\n"
+            f"💡 Главная задача: {data.get('main_task', 'не указано')}\n"
             f"⏰ Время: {updated_row[6]}\n"
             f"Telegram: @{updated_row[1] if updated_row[1] else 'не указан'}"
         )
@@ -338,6 +365,11 @@ async def confirm_record(callback: types.CallbackQuery):
                 await bot.send_message(ADMIN_TELEGRAM_ID, text_admin)
             except Exception as e:
                 logging.error(f"Ошибка отправки сообщения админу: {e}")
+
+        # Теперь можно очистить state
+        await state.clear()
+    else:
+        await callback.answer("Ошибка: запись не найдена в таблице", show_alert=True)
 
 
 # ================== FALLBACK ==================
