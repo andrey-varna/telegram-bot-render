@@ -469,7 +469,7 @@ app.router.add_get("/", healthcheck)
 app.router.add_post(WEBHOOK_PATH, webhook_handler)
 
 
-async def on_startup():
+async def on_startup(app):
     """Устанавливает webhook при запуске приложения."""
     if WEBHOOK_URL:
         webhook_url = f"{WEBHOOK_URL}{WEBHOOK_PATH}"
@@ -479,10 +479,9 @@ async def on_startup():
         logging.warning("⚠️ WEBHOOK_URL не задан - webhook не установлен!")
 
 
-if __name__ == "__main__":
-    # Устанавливаем webhook перед запуском
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(on_startup())
+# Регистрируем startup хук
+app.on_startup.append(on_startup)
 
+if __name__ == "__main__":
     logging.info(f"🚀 Bot started on port {PORT}")
     web.run_app(app, host="0.0.0.0", port=PORT)
