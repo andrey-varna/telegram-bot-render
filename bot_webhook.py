@@ -42,8 +42,7 @@ SCOPES = [
 
 service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 credentials = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
-gc = gspread.Client(auth=credentials)
-gc.login()
+gc = gspread.authorize(credentials)
 
 main_sheet = gc.open_by_key(MAIN_SHEET_KEY).sheet1
 unconfirmed_sheet = gc.open_by_key(UNCONFIRMED_SHEET_KEY).sheet1
