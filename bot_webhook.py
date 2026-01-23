@@ -16,7 +16,7 @@ from aiogram.types import Update, InlineKeyboardButton, InlineKeyboardMarkup, Re
 
 # ================== КОНФИГУРАЦИЯ ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-MAIN_SHEET_KEY = os.getenv("MAIN_SHEET_KEY")            # leads_main
+MAIN_SHEET_KEY = os.getenv("MAIN_SHEET_KEY")  # leads_main
 UNCONFIRMED_SHEET_KEY = os.getenv("UNCONFIRMED_SHEET_KEY")  # leads_unconfirmed
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "0"))
 PORT = int(os.getenv("PORT", "10000"))
@@ -47,6 +47,7 @@ gc.login()  # авторизация
 main_sheet = gc.open_by_key(MAIN_SHEET_KEY).sheet1
 unconfirmed_sheet = gc.open_by_key(UNCONFIRMED_SHEET_KEY).sheet1
 
+
 # ================== FSM ==================
 class BookingForm(StatesGroup):
     name = State()
@@ -55,6 +56,7 @@ class BookingForm(StatesGroup):
     partner = State()
     main_task = State()
     time_of_day = State()
+
 
 # ================== КЛАВИАТУРЫ ==================
 role_keyboard = types.ReplyKeyboardMarkup(
@@ -110,6 +112,7 @@ confirm_keyboard = InlineKeyboardMarkup(
     ]
 )
 
+
 # ================== ФУНКЦИИ ==================
 def save_main_user(data: dict):
     """Сохраняет или обновляет пользователя в основной таблице."""
@@ -117,8 +120,13 @@ def save_main_user(data: dict):
     ids = [str(r.get("telegram_id", "")) for r in records]
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Порядок колонок: A-L (12 колонок)
+    # A: telegram_id, B: username, C: name, D: role, E: business_stage,
+    # F: partner, G: time_of_day, H: status, I: source, J: campaign,
+    # K: started_at, L: confirmed_at
     row = [
-        data.get("telegram_id"),
+        str(data.get("telegram_id", "")),
         data.get("username", ""),
         data.get("name", ""),
         data.get("role", ""),
@@ -138,14 +146,17 @@ def save_main_user(data: dict):
     else:
         main_sheet.append_row(row)
 
+
 def save_unconfirmed_user(data: dict):
     """Сохраняет или обновляет пользователя во временной таблице для дожима."""
     records = unconfirmed_sheet.get_all_records()
     ids = [str(r.get("telegram_id", "")) for r in records]
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Порядок колонок: A-K (11 колонок)
     row = [
-        data.get("telegram_id"),
+        str(data.get("telegram_id", "")),
         data.get("username", ""),
         data.get("source", ""),
         data.get("campaign", ""),
@@ -164,6 +175,7 @@ def save_unconfirmed_user(data: dict):
     else:
         unconfirmed_sheet.append_row(row)
 
+
 def delete_unconfirmed_user(telegram_id):
     """Удаляет запись из временной таблицы."""
     records = unconfirmed_sheet.get_all_records()
@@ -171,6 +183,7 @@ def delete_unconfirmed_user(telegram_id):
     if str(telegram_id) in ids:
         idx = ids.index(str(telegram_id)) + 2
         unconfirmed_sheet.delete_rows(idx)
+
 
 # ================== START ==================
 @dp.message(Command("start"))
@@ -183,7 +196,13 @@ async def start(message: types.Message, state: FSMContext):
         source = parts[0]
         campaign = parts[1] if len(parts) > 1 else ""
 
-    await state.update_data(source=source, campaign=campaign, started_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    await state.update_data(
+        source=source,
+        campaign=campaign,
+        started_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        telegram_id=message.from_user.id,
+        username=message.from_user.username or ""
+    )
 
     await message.answer(
         "Здравствуйте.\n\n"
@@ -201,6 +220,7 @@ async def start(message: types.Message, state: FSMContext):
     )
     await state.set_state(BookingForm.name)
 
+
 # ================== ВОПРОСЫ ==================
 @dp.message(BookingForm.name)
 async def process_name(message: types.Message, state: FSMContext):
@@ -209,61 +229,67 @@ async def process_name(message: types.Message, state: FSMContext):
         return
     await state.update_data(name=message.text)
     data = await state.get_data()
-    save_main_user({**data, "telegram_id": message.from_user.id, "username": message.from_user.username, "status": "started"})
-    save_unconfirmed_user({**data, "telegram_id": message.from_user.id, "username": message.from_user.username})
+    save_main_user({**data, "status": "started"})
+    save_unconfirmed_user(data)
     await message.answer("Ваша роль в бизнесе:", reply_markup=role_keyboard)
     await state.set_state(BookingForm.role)
+
 
 @dp.message(BookingForm.role)
 async def process_role(message: types.Message, state: FSMContext):
     await state.update_data(role=message.text)
     data = await state.get_data()
-    save_main_user({**data, "telegram_id": message.from_user.id, "username": message.from_user.username, "status": "needs_followup"})
-    save_unconfirmed_user({**data, "telegram_id": message.from_user.id, "username": message.from_user.username})
+    save_main_user({**data, "status": "needs_followup"})
+    save_unconfirmed_user(data)
     await message.answer("Ваш бизнес сейчас:", reply_markup=business_keyboard)
     await state.set_state(BookingForm.business_stage)
+
 
 @dp.message(BookingForm.business_stage)
 async def process_business(message: types.Message, state: FSMContext):
     await state.update_data(business_stage=message.text)
     data = await state.get_data()
-    save_main_user({**data, "telegram_id": message.from_user.id, "username": message.from_user.username, "status": "needs_followup"})
-    save_unconfirmed_user({**data, "telegram_id": message.from_user.id, "username": message.from_user.username})
+    save_main_user({**data, "status": "needs_followup"})
+    save_unconfirmed_user(data)
     await message.answer("Есть ли у вас партнер?", reply_markup=partner_keyboard)
     await state.set_state(BookingForm.partner)
+
 
 @dp.message(BookingForm.partner)
 async def process_partner(message: types.Message, state: FSMContext):
     await state.update_data(partner=message.text)
     data = await state.get_data()
-    save_main_user({**data, "telegram_id": message.from_user.id, "username": message.from_user.username, "status": "needs_followup"})
-    save_unconfirmed_user({**data, "telegram_id": message.from_user.id, "username": message.from_user.username})
+    save_main_user({**data, "status": "needs_followup"})
+    save_unconfirmed_user(data)
     await message.answer(
-        "И последний, самый важный вопрос:\nКакую главную задачу вы хотите решить в ближайшие 3 месяца?:",
+        "И последний, самый важный вопрос:\nКакую главную задачу вы хотите решить в ближайшие 3 месяца?",
         reply_markup=task_keyboard
     )
     await state.set_state(BookingForm.main_task)
+
 
 @dp.message(BookingForm.main_task)
 async def process_task(message: types.Message, state: FSMContext):
     await state.update_data(main_task=message.text)
     data = await state.get_data()
-    save_main_user({**data, "telegram_id": message.from_user.id, "username": message.from_user.username, "status": "needs_followup"})
-    save_unconfirmed_user({**data, "telegram_id": message.from_user.id, "username": message.from_user.username})
+    save_main_user({**data, "status": "needs_followup"})
+    save_unconfirmed_user(data)
     await message.answer("Удобная половина дня:", reply_markup=time_keyboard)
     await state.set_state(BookingForm.time_of_day)
+
 
 @dp.message(BookingForm.time_of_day)
 async def process_time(message: types.Message, state: FSMContext):
     await state.update_data(time_of_day=message.text)
     data = await state.get_data()
-    save_main_user({**data, "telegram_id": message.from_user.id, "username": message.from_user.username, "status": "needs_followup"})
-    save_unconfirmed_user({**data, "telegram_id": message.from_user.id, "username": message.from_user.username})
+    save_main_user({**data, "status": "needs_followup"})
+    save_unconfirmed_user(data)
     await message.answer(
         "Спасибо. Подтвердите, пожалуйста, введенные данные.",
         reply_markup=confirm_keyboard
     )
     await state.clear()
+
 
 # ================== CALLBACK ==================
 @dp.callback_query(lambda c: c.data == "record")
@@ -275,45 +301,65 @@ async def confirm_record(callback: types.CallbackQuery):
     if str(telegram_id) in ids:
         idx = ids.index(str(telegram_id)) + 2
         row = main_sheet.row_values(idx)
-        row[7] = "confirmed"  # status
-        row[11] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # confirmed_at
-        main_sheet.update(f"A{idx}:L{idx}", [row])
 
-        # Получаем данные для сообщения админу
+        # Обновляем только нужные ячейки: H (status) и L (confirmed_at)
+        confirmed_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        main_sheet.update_acell(f"H{idx}", "confirmed")  # status
+        main_sheet.update_acell(f"L{idx}", confirmed_time)  # confirmed_at
+
+        # Получаем актуальные данные для сообщения админу
+        updated_row = main_sheet.row_values(idx)
         text_admin = (
             f"❤️ ДИАГНОСТИЧЕСКАЯ СЕССИЯ\n"
             f"«Бизнес как продолжение любви»\n\n"
-            f"👤 Имя: {row[2]}\n"
-            f"🎯 Роль: {row[3]}\n"
-            f"💼 Бизнес: {row[4]}\n"
-            f"👥 Партнёр: {row[5]}\n"
-            f"💡 Главная задача: {row[6]}\n"
-            f"⏰ Время: {row[7]}\n"
-            f"@{row[1]}"
+            f"👤 Имя: {updated_row[2]}\n"
+            f"🎯 Роль: {updated_row[3]}\n"
+            f"💼 Бизнес: {updated_row[4]}\n"
+            f"👥 Партнёр: {updated_row[5]}\n"
+            f"⏰ Время: {updated_row[6]}\n"
+            f"Telegram: @{updated_row[1] if updated_row[1] else 'не указан'}"
         )
-
-        if ADMIN_TELEGRAM_ID:
-            await bot.send_message(ADMIN_TELEGRAM_ID, text_admin)
 
         # Удаляем из временной таблицы
         delete_unconfirmed_user(telegram_id)
 
-        await callback.message.answer("Спасибо. Мы свяжемся с вами для подтверждения и согласования времени.", reply_markup=ReplyKeyboardRemove())
+        # Сначала отвечаем на callback
         await callback.answer()
+
+        # Отправляем сообщение пользователю
+        await callback.message.answer(
+            "Спасибо! Ваши данные подтверждены. Мы свяжемся с вами для согласования времени диагностической сессии.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+        # Отправляем уведомление админу
+        if ADMIN_TELEGRAM_ID:
+            try:
+                await bot.send_message(ADMIN_TELEGRAM_ID, text_admin)
+            except Exception as e:
+                logging.error(f"Ошибка отправки сообщения админу: {e}")
+
 
 # ================== FALLBACK ==================
 @dp.message()
 async def fallback(message: types.Message):
     await message.answer("Используйте /start")
 
+
 # ================== WEBHOOK ==================
 async def webhook_handler(request):
-    update = Update.model_validate(await request.json())
-    await dp.feed_update(bot, update)
-    return web.Response(text="ok")
+    try:
+        update = Update.model_validate(await request.json())
+        await dp.feed_update(bot, update)
+        return web.Response(text="ok")
+    except Exception as e:
+        logging.error(f"Ошибка обработки webhook: {e}")
+        return web.Response(text="error", status=500)
+
 
 async def healthcheck(request):
     return web.Response(text="Bot is alive")
+
 
 # ================== APP ==================
 app = web.Application()
