@@ -240,19 +240,46 @@ async def proc_time(message: types.Message, state: FSMContext):
 async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     # Сначала ПЕРЕНОСИМ
-    if finalize_to_main(data):
-        await callback.message.edit_text("✅ Спасибо! Ваши данные подтверждены.")
-        if ADMIN_TELEGRAM_ID:
-            text_admin = (f"❤️ **НОВАЯ ЗАЯВКА**\n\n👤 {data.get('name')}\n📈 {data.get('source')}_{data.get('campaign')}")
-            try:
-                await bot.send_message(ADMIN_TELEGRAM_ID, text_admin)
-            except:
-                pass
-        # Только потом ОЧИЩАЕМ
-        await state.clear()
-    else:
-        await callback.answer("Ошибка сохранения в таблицу", show_alert=True)
+    @dp.callback_query(lambda c: c.data == "confirm_final")
+    async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
+        data = await state.get_data()
 
+        # Сначала пытаемся сохранить в таблицу
+        if finalize_to_main(data):
+            # 1. Ответ пользователю
+            await callback.message.edit_text(
+                "✅ Спасибо! Ваши данные подтверждены. Я скоро свяжусь с вами, чтобы согласовать точное время сессии.")
+
+            # 2. ПОЛНОЕ сообщение Вам (Админу)
+            if ADMIN_TELEGRAM_ID:
+                username = callback.from_user.username or "скрыт"
+                text_admin = (
+                    f"❤️ **НОВАЯ ЗАЯВКА НА ДИАГНОСТИКУ**\n\n"
+                    f"👤 **Имя:** {data.get('name')}\n"
+                    f"🎯 **Роль:** {data.get('role')}\n"
+                    f"💼 **Бизнес:** {data.get('business_stage')}\n"
+                    f"👥 **Партнёр:** {data.get('partner')}\n"
+                    f"💡 **Задача:** {data.get('main_task')}\n"
+                    f"⏰ **Время:** {data.get('time_of_day')}\n\n"
+                    f"📈 **Маркетинг:**\n"
+                    f"└ Источник: `{data.get('source')}`\n"
+                    f"└ Кампания: `{data.get('campaign')}`\n"
+                    f"└ Объявление: `{data.get('ad_label')}`\n\n"
+                    f"📱 **Telegram:** @{username}\n"
+                    f"🆔 **ID:** `{callback.from_user.id}`"
+                )
+                try:
+                    await bot.send_message(ADMIN_TELEGRAM_ID, text_admin, parse_mode="Markdown")
+                except Exception as e:
+                    logging.error(f"Ошибка отправки админу: {e}")
+
+            # Только после успешного сохранения и отправки очищаем состояние
+            await state.clear()
+        else:
+            # Если таблица выдала ошибку
+            await callback.answer(
+                "⚠️ Ошибка при сохранении данных в таблицу. Попробуйте еще раз или напишите в поддержку.",
+                show_alert=True)
 
 # ================== SERVER ==================
 
@@ -261,17 +288,27 @@ async def handle_webhook(request):
     await dp.feed_update(bot, Update.model_validate(body))
     return web.Response(text="ok")
 
+# ... (начало кода без изменений)
 
 async def on_startup(app):
+    # Устанавливаем вебхук
     await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+    # Запускаем планировщик для дожатия
     scheduler.add_job(check_abandoned_carts, "interval", minutes=15)
     scheduler.start()
+    logging.info("Бот запущен и планировщик активирован")
 
+async def on_shutdown(app):
+    logging.info("Закрытие сессий...")
+    await bot.session.close() # Вот эта строка исправит ошибку Unclosed client session
+    scheduler.shutdown()
 
 app = web.Application()
 app.router.add_post("/webhook", handle_webhook)
 app.router.add_get("/", lambda r: web.Response(text="ok"))
+
 app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown) # Добавляем обработчик выключения
 
 if __name__ == "__main__":
     web.run_app(app, host="0.0.0.0", port=PORT)
