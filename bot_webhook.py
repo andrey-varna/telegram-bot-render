@@ -20,11 +20,11 @@ MAIN_SHEET_KEY = os.getenv("MAIN_SHEET_KEY")
 UNCONFIRMED_SHEET_KEY = os.getenv("UNCONFIRMED_SHEET_KEY")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "0"))
 PORT = int(os.getenv("PORT", "10000"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Должен быть https://название.onrender.com
 
 logging.basicConfig(level=logging.INFO)
 
-# ================== GOOGLE SHEETS SETUP ==================
+# ================== GOOGLE SHEETS ==================
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 credentials = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
@@ -72,58 +72,31 @@ confirm_keyboard = InlineKeyboardMarkup(
 # ================== ЛОГИКА ТАБЛИЦ ==================
 
 def sync_unconfirmed(data: dict, status: str = "started"):
-    """ leads_unconfirmed: 12 столбцов """
     try:
         records = unconfirmed_sheet.get_all_records()
         ids = [str(r.get("telegram_id", "")) for r in records]
         tid = str(data.get("telegram_id"))
-
-        row = [
-            tid,
-            data.get("username", ""),
-            data.get("name", ""),
-            data.get("role", ""),
-            data.get("business_stage", ""),
-            data.get("partner", ""),
-            data.get("time_of_day", ""),
-            status,
-            data.get("source", ""),
-            data.get("campaign", ""),
-            data.get("started_at", ""),
-            ""  # confirmed_at
-        ]
+        row = [tid, data.get("username", ""), data.get("name", ""), data.get("role", ""),
+               data.get("business_stage", ""), data.get("partner", ""), data.get("time_of_day", ""),
+               status, data.get("source", ""), data.get("campaign", ""), data.get("started_at", ""), ""]
 
         if tid in ids:
             idx = ids.index(tid) + 2
-            # Исправлен вызов: сначала диапазон, потом значения
             unconfirmed_sheet.update(range_name=f"A{idx}:L{idx}", values=[row])
-            logging.info(f"🔄 Данные обновлены в unconfirmed для {tid}")
         else:
             unconfirmed_sheet.append_row(row)
-            logging.info(f"📝 Новая запись в unconfirmed для {tid}")
     except Exception as e:
-        logging.error(f"❌ Ошибка sync_unconfirmed: {e}")
+        logging.error(f"❌ Error sync_unconfirmed: {e}")
 
 
 def finalize_to_main(data: dict):
-    """ leads_main: 11 столбцов строго по вашему порядку """
     try:
-        row_main = [
-            str(data.get("telegram_id")),
-            data.get("username", ""),
-            data.get("source", ""),
-            data.get("campaign", ""),
-            data.get("name", ""),
-            data.get("role", ""),
-            data.get("business_stage", ""),
-            data.get("partner", ""),
-            data.get("main_task", ""),
-            data.get("time_of_day", ""),
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ]
+        row_main = [str(data.get("telegram_id")), data.get("username", ""), data.get("source", ""),
+                    data.get("campaign", ""), data.get("name", ""), data.get("role", ""),
+                    data.get("business_stage", ""), data.get("partner", ""), data.get("main_task", ""),
+                    data.get("time_of_day", ""), datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
         main_sheet.append_row(row_main)
 
-        # Удаляем из временной после успешного копирования
         records = unconfirmed_sheet.get_all_records()
         ids = [str(r.get("telegram_id", "")) for r in records]
         tid = str(data.get("telegram_id"))
@@ -132,7 +105,7 @@ def finalize_to_main(data: dict):
             unconfirmed_sheet.delete_rows(idx)
         return True
     except Exception as e:
-        logging.error(f"❌ Ошибка finalize_to_main: {e}")
+        logging.error(f"❌ Error finalize_to_main: {e}")
         return False
 
 
@@ -161,11 +134,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
         "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' "
         "- это про то, как быть сильной, не ослабляя партнёра. "
         "И как создать дело, которое укрепляет отношения, а не разрушает их.\n\n"
-        "Диагностика - это первый шаг к тому, чтобы увидеть свою жизнь "
-        "как систему.\n\n"
         "Как к вам можно обращаться?"
     )
-    await message.answer(welcome_text)
+    await message.answer(welcome_text, reply_markup=ReplyKeyboardRemove())
     await state.set_state(BookingForm.name)
 
 
@@ -197,7 +168,7 @@ async def proc_stage(message: types.Message, state: FSMContext):
 async def proc_partner(message: types.Message, state: FSMContext):
     await state.update_data(partner=message.text)
     sync_unconfirmed(await state.get_data())
-    await message.answer("Какую главную задачу вы хотите решить в ближайшие 3 месяца?", reply_markup=task_keyboard)
+    await message.answer("Какую задачу хотите решить за 3 месяца?", reply_markup=task_keyboard)
     await state.set_state(BookingForm.main_task)
 
 
@@ -214,68 +185,51 @@ async def proc_time(message: types.Message, state: FSMContext):
     await state.update_data(time_of_day=message.text)
     data = await state.get_data()
     sync_unconfirmed(data, status="completed")
-
-    summary = (
-        f"📋 Проверьте ваши данные:\n\n"
-        f"👤 Имя: {data.get('name')}\n"
-        f"🎯 Роль: {data.get('role')}\n"
-        f"💼 Бизнес: {data.get('business_stage')}\n"
-        f"👥 Партнёр: {data.get('partner')}\n"
-        f"💡 Задача: {data.get('main_task')}\n"
-        f"⏰ Время: {data.get('time_of_day')}\n\n"
-        f"Всё верно?"
-    )
+    summary = f"📋 Проверьте данные:\n\nИмя: {data['name']}\nРоль: {data['role']}\nЗадача: {data['main_task']}\nВремя: {data['time_of_day']}"
     await message.answer(summary, reply_markup=confirm_keyboard)
 
 
 @dp.callback_query(lambda c: c.data == "confirm_final")
 async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-
     if finalize_to_main(data):
-        await callback.message.edit_text("✅ Спасибо! Ваши данные подтверждены.")
-
-        # ✅ ОТПРАВКА ПОЛНОГО ОТЧЕТА АДМИНУ
+        await callback.message.edit_text("✅ Спасибо! Данные подтверждены.")
         if ADMIN_TELEGRAM_ID:
-            text_admin = (
-                f"❤️ ДИАГНОСТИЧЕСКАЯ СЕССИЯ\n"
-                f"«Бизнес как продолжение любви»\n\n"
-                f"👤 Имя: {data.get('name', 'не указано')}\n"
-                f"🎯 Роль: {data.get('role', 'не указано')}\n"
-                f"💼 Бизнес: {data.get('business_stage', 'не указано')}\n"
-                f"👥 Партнёр: {data.get('partner', 'не указано')}\n"
-                f"💡 Главная задача: {data.get('main_task', 'не указано')}\n"
-                f"⏰ Время: {data.get('time_of_day', 'не указано')}\n"
-                f"Telegram: @{data.get('username', 'не указан')}"
-            )
+            text_admin = (f"👤 Имя: {data.get('name')}\n🎯 Роль: {data.get('role')}\n"
+                          f"💡 Задача: {data.get('main_task')}\nTG: @{data.get('username')}")
             try:
                 await bot.send_message(ADMIN_TELEGRAM_ID, text_admin)
-            except Exception as e:
-                logging.error(f"❌ Ошибка отправки админу: {e}")
-
+            except:
+                pass
         await state.clear()
     else:
-        await callback.answer("Ошибка сохранения данных.", show_alert=True)
+        await callback.answer("Ошибка сохранения.", show_alert=True)
 
 
-# ================== SERVER ==================
+# ================== СЕРВЕР И ВЕБХУК ==================
 
 async def handle_webhook(request):
+    logging.info("📥 Входящий запрос на вебхук")
     try:
-        data = await request.json()
-        update = Update.model_validate(data)
+        body = await request.json()
+        update = Update.model_validate(body)
         await dp.feed_update(bot, update)
         return web.Response(text="ok")
-    except:
+    except Exception as e:
+        logging.error(f"❌ Ошибка обработки вебхука: {e}")
         return web.Response(text="error", status=500)
 
 
 async def handle_health(request):
-    return web.Response(text="ok", status=200)
+    return web.Response(text="Bot is running", status=200)
 
 
 async def on_startup(app):
-    await bot.set_webhook(f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}")
+    # Удаляем старый вебхук перед установкой нового
+    await bot.delete_webhook(drop_pending_updates=True)
+    webhook_path = f"{WEBHOOK_URL}/webhook"
+    await bot.set_webhook(webhook_path)
+    logging.info(f"🚀 Вебхук установлен на: {webhook_path}")
 
 
 async def on_shutdown(app):
@@ -284,7 +238,7 @@ async def on_shutdown(app):
 
 app = web.Application()
 app.router.add_get("/", handle_health)
-app.router.add_post(f"/webhook/{BOT_TOKEN}", handle_webhook)
+app.router.add_post("/webhook", handle_webhook)  # Упрощенный путь для теста
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
