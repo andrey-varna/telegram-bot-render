@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from aiohttp import web
 import gspread
 from google.oauth2.service_account import Credentials
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -16,7 +16,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # ================== КОНФИГУРАЦИЯ ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-# ID файла берем из любой переменной, так как файл один
 SPREADSHEET_KEY = os.getenv("MAIN_SHEET_KEY")
 ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "0"))
 PORT = int(os.getenv("PORT", "10000"))
@@ -30,7 +29,6 @@ service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 credentials = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
 gc = gspread.authorize(credentials)
 
-# Открываем ОДИН файл и ДВЕ разные вкладки
 spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
 main_sheet = spreadsheet.worksheet("leads_main")
 unconfirmed_sheet = spreadsheet.worksheet("leads_unconfirmed")
@@ -74,13 +72,9 @@ confirm_keyboard = InlineKeyboardMarkup(
 
 # ================== ЛОГИКА ТАБЛИЦ ==================
 
-def sync_unconfirmed(data: dict, status: str = "started"):
-    """Запись во ВРЕМЕННУЮ таблицу (leads_unconfirmed)"""
+def sync_unconfirmed(data: dict, status: str):
     try:
         tid = str(data.get("telegram_id"))
-        # Ищем, есть ли уже этот ID в первой колонке
-        cell = unconfirmed_sheet.find(tid, in_column=1)
-
         row = [
             tid, data.get("username", ""), data.get("name", ""),
             data.get("role", ""), data.get("business_stage", ""),
@@ -88,19 +82,17 @@ def sync_unconfirmed(data: dict, status: str = "started"):
             status, data.get("source", ""), data.get("campaign", ""),
             data.get("ad_label", ""), data.get("started_at", "")
         ]
-
+        cell = unconfirmed_sheet.find(tid, in_column=1)
         if cell:
             unconfirmed_sheet.update(f"A{cell.row}:L{cell.row}", [row])
         else:
             unconfirmed_sheet.append_row(row)
     except Exception as e:
-        logging.error(f"❌ Error sync_unconfirmed: {e}")
+        logging.error(f"Error sync_unconfirmed: {e}")
 
 
 def finalize_to_main(data: dict):
-    """Перенос из временной в ОСНОВНУЮ (leads_main)"""
     try:
-        # 1. Записываем в ОСНОВНУЮ
         row_main = [
             str(data.get("telegram_id")), data.get("username", ""),
             data.get("source", ""), data.get("campaign", ""),
@@ -111,19 +103,18 @@ def finalize_to_main(data: dict):
             datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ]
         main_sheet.append_row(row_main)
-
-        # 2. Удаляем из ВРЕМЕННОЙ (ищем по ID)
-        cell = unconfirmed_sheet.find(str(data.get("telegram_id")), in_column=1)
-        if cell:
-            unconfirmed_sheet.delete_rows(cell.row)
-
+        try:
+            cell = unconfirmed_sheet.find(str(data.get("telegram_id")), in_column=1)
+            if cell: unconfirmed_sheet.delete_rows(cell.row)
+        except:
+            pass
         return True
     except Exception as e:
-        logging.error(f"❌ Error finalize_to_main: {e}")
+        logging.error(f"Error finalize_to_main: {e}")
         return False
 
 
-# ================== ДОЖАТИЕ ==================
+# ================== ДОЖАТИЕ (АДМИН) ==================
 
 async def check_abandoned_carts():
     try:
@@ -135,13 +126,10 @@ async def check_abandoned_carts():
             diff = now - start_dt
             status = str(row.get('status', ''))
 
-            # Если прошло > 10 минут и мы еще не уведомляли админа
             if timedelta(minutes=10) <= diff < timedelta(minutes=45) and "admin_notified" not in status:
                 admin_text = (f"⚠️ **НА ДОРАБОТКУ**\n\n👤 @{row.get('username')}\n"
-                              f"📝 Имя: {row.get('name') or 'не указано'}\n📍 Шаг: {status}\n"
-                              f"📈 {row.get('source')}_{row.get('campaign')}")
+                              f"📝 Имя: {row.get('name') or 'не указано'}\n📍 Шаг: {status}")
                 await bot.send_message(ADMIN_TELEGRAM_ID, admin_text)
-                # Обновляем статус прямо в ячейке H (8-я колонка)
                 unconfirmed_sheet.update_cell(i + 2, 8, status + "_admin_notified")
     except Exception as e:
         logging.error(f"Scheduler error: {e}")
@@ -152,32 +140,30 @@ async def check_abandoned_carts():
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
-    args = message.text.split(" ", 1)
+    args = message.text.split()
     source, campaign, ad_label = "organic", "none", "none"
     if len(args) > 1:
         parts = args[1].split("_")
-        if len(parts) >= 1: source = parts[0]
-        if len(parts) >= 2: campaign = parts[1]
-        if len(parts) >= 3: ad_label = parts[2]
+        source = parts[0] if len(parts) >= 1 else "organic"
+        campaign = parts[1] if len(parts) >= 2 else "none"
+        ad_label = parts[2] if len(parts) >= 3 else "none"
 
     start_data = {
         "telegram_id": message.from_user.id,
-        "username": message.from_user.username or "",
+        "username": message.from_user.username or "none",
         "source": source, "campaign": campaign, "ad_label": ad_label,
         "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "name": "", "role": "", "business_stage": "", "partner": "", "time_of_day": "", "main_task": ""
     }
     await state.update_data(**start_data)
-    sync_unconfirmed(start_data, status="started")
+    sync_unconfirmed(start_data, "just_started")
 
     welcome_text = (
         "Здравствуйте.\n\n"
         "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' "
         "- это про то, как быть сильной, не ослабляя партнёра. "
         "И как создать дело, которое укрепляет отношения, а не разрушает их.\n\n"
-        "Диагностика - это первый шаг к тому, чтобы увидеть свою жизнь "
-        "как систему. За 40-60 минут мы найдём ключевые точки, "
-        "где сейчас утекает ваша энергия и сила.\n\n"
+        "Диагностика - это первый шаг к тому, чтобы увидеть свою жизнь как систему.\n\n"
         "Как к вам можно обращаться?"
     )
     await message.answer(welcome_text, reply_markup=ReplyKeyboardRemove())
@@ -186,8 +172,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 @dp.message(BookingForm.name)
 async def proc_name(message: types.Message, state: FSMContext):
+    if not message.text: return
     await state.update_data(name=message.text)
-    sync_unconfirmed(await state.get_data(), status="name_entered")
+    sync_unconfirmed(await state.get_data(), "name_done")
     await message.answer("Ваша роль в бизнесе:", reply_markup=role_keyboard)
     await state.set_state(BookingForm.role)
 
@@ -195,7 +182,7 @@ async def proc_name(message: types.Message, state: FSMContext):
 @dp.message(BookingForm.role)
 async def proc_role(message: types.Message, state: FSMContext):
     await state.update_data(role=message.text)
-    sync_unconfirmed(await state.get_data(), status="role_entered")
+    sync_unconfirmed(await state.get_data(), "role_done")
     await message.answer("Ваш бизнес сейчас:", reply_markup=business_keyboard)
     await state.set_state(BookingForm.business_stage)
 
@@ -203,7 +190,7 @@ async def proc_role(message: types.Message, state: FSMContext):
 @dp.message(BookingForm.business_stage)
 async def proc_stage(message: types.Message, state: FSMContext):
     await state.update_data(business_stage=message.text)
-    sync_unconfirmed(await state.get_data(), status="stage_entered")
+    sync_unconfirmed(await state.get_data(), "stage_done")
     await message.answer("Есть ли у вас партнер?", reply_markup=partner_keyboard)
     await state.set_state(BookingForm.partner)
 
@@ -211,16 +198,16 @@ async def proc_stage(message: types.Message, state: FSMContext):
 @dp.message(BookingForm.partner)
 async def proc_partner(message: types.Message, state: FSMContext):
     await state.update_data(partner=message.text)
-    sync_unconfirmed(await state.get_data(), status="partner_entered")
-    await message.answer("Какую главную задачу вы хотите решить в ближайшие 3 месяца?", reply_markup=task_keyboard)
+    sync_unconfirmed(await state.get_data(), "partner_done")
+    await message.answer("Какую задачу хотите решить за 3 месяца?", reply_markup=task_keyboard)
     await state.set_state(BookingForm.main_task)
 
 
 @dp.message(BookingForm.main_task)
 async def proc_task(message: types.Message, state: FSMContext):
     await state.update_data(main_task=message.text)
-    sync_unconfirmed(await state.get_data(), status="task_entered")
-    await message.answer("В какое время дня вам удобнее всего созвониться?", reply_markup=time_keyboard)
+    sync_unconfirmed(await state.get_data(), "task_done")
+    await message.answer("Удобное время для связи:", reply_markup=time_keyboard)
     await state.set_state(BookingForm.time_of_day)
 
 
@@ -228,58 +215,34 @@ async def proc_task(message: types.Message, state: FSMContext):
 async def proc_time(message: types.Message, state: FSMContext):
     await state.update_data(time_of_day=message.text)
     data = await state.get_data()
-    sync_unconfirmed(data, status="awaiting_confirm")
+    sync_unconfirmed(data, "awaiting_confirm")
 
-    summary = (f"📋 **Проверьте ваши данные:**\n\n👤 Имя: {data['name']}\n🎯 Роль: {data['role']}\n"
+    summary = (f"📋 **Ваши данные:**\n\n👤 Имя: {data['name']}\n🎯 Роль: {data['role']}\n"
                f"💼 Бизнес: {data['business_stage']}\n👥 Партнёр: {data['partner']}\n"
                f"💡 Задача: {data['main_task']}\n⏰ Время: {data['time_of_day']}")
-    await message.answer(summary, reply_markup=confirm_keyboard)
+    await message.answer(summary, reply_markup=confirm_keyboard, parse_mode="Markdown")
 
 
-@dp.callback_query(lambda c: c.data == "confirm_final")
+@dp.callback_query(F.data == "confirm_final")
 async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    # Сначала ПЕРЕНОСИМ
-    @dp.callback_query(lambda c: c.data == "confirm_final")
-    async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
-        data = await state.get_data()
+    if finalize_to_main(data):
+        await callback.message.edit_text("✅ Спасибо! Данные подтверждены. Скоро свяжусь с вами.")
+        if ADMIN_TELEGRAM_ID:
+            text_admin = (f"❤️ **НОВАЯ ЗАЯВКА**\n\n👤 {data.get('name')}\n🎯 {data.get('role')}\n"
+                          f"💡 {data.get('main_task')}\n📈 {data.get('source')}_{data.get('campaign')}\n"
+                          f"📱 @{callback.from_user.username or 'скрыт'}")
+            await bot.send_message(ADMIN_TELEGRAM_ID, text_admin, parse_mode="Markdown")
+        await state.clear()
+    else:
+        await callback.answer("Ошибка сохранения", show_alert=True)
 
-        # Сначала пытаемся сохранить в таблицу
-        if finalize_to_main(data):
-            # 1. Ответ пользователю
-            await callback.message.edit_text(
-                "✅ Спасибо! Ваши данные подтверждены. Я скоро свяжусь с вами, чтобы согласовать точное время сессии.")
 
-            # 2. ПОЛНОЕ сообщение Вам (Админу)
-            if ADMIN_TELEGRAM_ID:
-                username = callback.from_user.username or "скрыт"
-                text_admin = (
-                    f"❤️ **НОВАЯ ЗАЯВКА НА ДИАГНОСТИКУ**\n\n"
-                    f"👤 **Имя:** {data.get('name')}\n"
-                    f"🎯 **Роль:** {data.get('role')}\n"
-                    f"💼 **Бизнес:** {data.get('business_stage')}\n"
-                    f"👥 **Партнёр:** {data.get('partner')}\n"
-                    f"💡 **Задача:** {data.get('main_task')}\n"
-                    f"⏰ **Время:** {data.get('time_of_day')}\n\n"
-                    f"📈 **Маркетинг:**\n"
-                    f"└ Источник: `{data.get('source')}`\n"
-                    f"└ Кампания: `{data.get('campaign')}`\n"
-                    f"└ Объявление: `{data.get('ad_label')}`\n\n"
-                    f"📱 **Telegram:** @{username}\n"
-                    f"🆔 **ID:** `{callback.from_user.id}`"
-                )
-                try:
-                    await bot.send_message(ADMIN_TELEGRAM_ID, text_admin, parse_mode="Markdown")
-                except Exception as e:
-                    logging.error(f"Ошибка отправки админу: {e}")
+# ЭХО-ХЕНДЛЕР (Если пользователь пишет не то или бот не в режиме опроса)
+@dp.message()
+async def echo_handler(message: types.Message):
+    await message.answer("Для запуска бота наберите команду /start")
 
-            # Только после успешного сохранения и отправки очищаем состояние
-            await state.clear()
-        else:
-            # Если таблица выдала ошибку
-            await callback.answer(
-                "⚠️ Ошибка при сохранении данных в таблицу. Попробуйте еще раз или напишите в поддержку.",
-                show_alert=True)
 
 # ================== SERVER ==================
 
@@ -288,27 +251,23 @@ async def handle_webhook(request):
     await dp.feed_update(bot, Update.model_validate(body))
     return web.Response(text="ok")
 
-# ... (начало кода без изменений)
 
 async def on_startup(app):
-    # Устанавливаем вебхук
     await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-    # Запускаем планировщик для дожатия
     scheduler.add_job(check_abandoned_carts, "interval", minutes=15)
     scheduler.start()
-    logging.info("Бот запущен и планировщик активирован")
+
 
 async def on_shutdown(app):
-    logging.info("Закрытие сессий...")
-    await bot.session.close() # Вот эта строка исправит ошибку Unclosed client session
+    await bot.session.close()
     scheduler.shutdown()
+
 
 app = web.Application()
 app.router.add_post("/webhook", handle_webhook)
 app.router.add_get("/", lambda r: web.Response(text="ok"))
-
 app.on_startup.append(on_startup)
-app.on_shutdown.append(on_shutdown) # Добавляем обработчик выключения
+app.on_shutdown.append(on_shutdown)
 
 if __name__ == "__main__":
     web.run_app(app, host="0.0.0.0", port=PORT)
