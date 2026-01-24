@@ -282,3 +282,25 @@ app.on_startup.append(on_startup)
 
 if __name__ == "__main__":
     web.run_app(app, host="0.0.0.0", port=PORT)
+
+# ================== SERVER ==================
+
+async def handle_webhook(request):
+    body = await request.json()
+    await dp.feed_update(bot, Update.model_validate(body))
+    return web.Response(text="ok")
+
+
+async def on_startup(app):
+    await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
+    scheduler.add_job(check_abandoned_carts, "interval", minutes=15)
+    scheduler.start()
+
+
+app = web.Application()
+app.router.add_post("/webhook", handle_webhook)
+app.router.add_get("/", lambda r: web.Response(text="ok"))
+app.on_startup.append(on_startup)
+
+if __name__ == "__main__":
+    web.run_app(app, host="0.0.0.0", port=PORT)
