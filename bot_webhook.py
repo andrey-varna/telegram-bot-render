@@ -73,6 +73,7 @@ confirm_keyboard = InlineKeyboardMarkup(
 # ================== ЛОГИКА ТАБЛИЦ ==================
 
 def sync_unconfirmed(data: dict, status: str):
+    """Пошаговое сохранение во временную таблицу для дожима."""
     try:
         tid = str(data.get("telegram_id"))
         row = [
@@ -82,23 +83,25 @@ def sync_unconfirmed(data: dict, status: str):
             status, data.get("source", ""), data.get("campaign", ""),
             data.get("ad_label", ""), data.get("started_at", "")
         ]
-        cell = unconfirmed_sheet.find(tid, in_column=1)
-        if cell:
-            unconfirmed_sheet.update(f"A{cell.row}:L{cell.row}", [row])
-        else:
+        try:
+            cell = unconfirmed_sheet.find(tid, in_column=1)
+            if cell:
+                unconfirmed_sheet.update(f"A{cell.row}:L{cell.row}", [row])
+            else:
+                unconfirmed_sheet.append_row(row)
+        except:
             unconfirmed_sheet.append_row(row)
     except Exception as e:
         logging.error(f"Error sync_unconfirmed: {e}")
 
 
 def finalize_to_main(data: dict):
+    """Перенос в основную таблицу с проверкой на дубликаты."""
     try:
         tid = str(data.get("telegram_id"))
-        # Защита от дублей
         try:
             if main_sheet.find(tid, in_column=1):
-                logging.info(f"Duplicate found for {tid}, skipping write.")
-                return True
+                return True  # Уже есть
         except:
             pass
 
@@ -113,7 +116,6 @@ def finalize_to_main(data: dict):
         ]
         main_sheet.append_row(row_main)
 
-        # Очистка временной
         try:
             cell = unconfirmed_sheet.find(tid, in_column=1)
             if cell: unconfirmed_sheet.delete_rows(cell.row)
@@ -125,35 +127,26 @@ def finalize_to_main(data: dict):
         return False
 
 
-# ================== АВТО-ДОЖАТИЕ ==================
+# ================== ДОЖИМ (SCHEDULER) ==================
 
-async def check_abandoned_carts():
+async def check_abandoned():
+    """Проверка застрявших анкет каждые 15 мин."""
     try:
         records = unconfirmed_sheet.get_all_records()
         now = datetime.now()
         for i, row in enumerate(records):
-            if not row.get('started_at'): continue
-            try:
-                start_dt = datetime.strptime(row['started_at'], "%Y-%m-%d %H:%M:%S")
-            except:
-                continue
-
+            if not row.get('started_at') or 'msg_sent' in str(row.get('status')): continue
+            start_dt = datetime.strptime(row['started_at'], "%Y-%m-%d %H:%M:%S")
             diff = now - start_dt
-            tid = row.get('telegram_id')
-            status = str(row.get('status', ''))
-            name = row.get('name') or "Дорогая коллега"
 
-            if timedelta(minutes=10) <= diff < timedelta(hours=23) and "admin_notified" not in status:
-                admin_text = (f"⚠️ **НА ДОРАБОТКУ**\n\n👤 @{row.get('username')}\n"
-                              f"📝 Имя: {row.get('name') or 'не указано'}\n📍 Шаг: {status}")
-                await bot.send_message(ADMIN_TELEGRAM_ID, admin_text)
-                unconfirmed_sheet.update_cell(i + 2, 8, status + "_admin_notified")
-
-            if timedelta(days=1) <= diff < timedelta(days=2) and "msg1_sent" not in status:
-                text = (f"{name}, здравствуйте! Вы начали заполнять анкету, но не закончили. Жду вас: /start")
+            # Если прошло больше 30 мин, но меньше суток - мягко напоминаем
+            if timedelta(minutes=30) <= diff <= timedelta(hours=24):
+                tid = row.get('telegram_id')
+                name = row.get('name') or "Дорогая коллега"
+                text = f"{name}, вы остановились на заполнении анкеты. Чтобы мы могли подготовить для вас диагностику, завершите опрос: /start"
                 try:
                     await bot.send_message(tid, text)
-                    unconfirmed_sheet.update_cell(i + 2, 8, status + "_msg1_sent")
+                    unconfirmed_sheet.update_cell(i + 2, 8, str(row.get('status')) + "_msg_sent")
                 except:
                     pass
     except Exception as e:
@@ -169,9 +162,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
     source, campaign, ad_label = "organic", "none", "none"
     if len(args) > 1:
         parts = args[1].split("_")
-        source = parts[0] if len(parts) >= 1 else "organic"
-        campaign = parts[1] if len(parts) >= 2 else "none"
-        ad_label = parts[2] if len(parts) >= 3 else "none"
+        if len(parts) >= 1: source = parts[0]
+        if len(parts) >= 2: campaign = parts[1]
+        if len(parts) >= 3: ad_label = "_".join(parts[2:])
 
     start_data = {
         "telegram_id": message.from_user.id,
@@ -185,8 +178,12 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
     welcome_text = (
         "Здравствуйте.\n\n"
-        "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' — это про то, как быть сильной, не ослабляя партнёра.\n\n"
-        "Диагностика — это первый шаг. Как к вам можно обращаться?"
+        "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' — это про то, как быть сильной, не ослабляя партнёра. "
+        "И как создать дело, которое укрепляет отношения, а не разрушает их.\n\n"
+        "Диагностика — это первый шаг к тому, чтобы увидеть свою жизнь как систему. "
+        "За 40-60 минут мы найдём ключевые точки, где сейчас утекает ваша энергия и сила.\n\n"
+        "Ответьте, пожалуйста, на несколько вопросов — это займёт 2-3 минуты.\n\n"
+        "Как к вам можно обращаться?"
     )
     await message.answer(welcome_text, reply_markup=ReplyKeyboardRemove())
     await state.set_state(BookingForm.name)
@@ -195,7 +192,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
 @dp.message(BookingForm.name)
 async def proc_name(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    sync_unconfirmed(await state.get_data(), "name_done")
+    sync_unconfirmed(await state.get_data(), "step_name")
     await message.answer("Ваша роль в бизнесе:", reply_markup=role_keyboard)
     await state.set_state(BookingForm.role)
 
@@ -203,7 +200,7 @@ async def proc_name(message: types.Message, state: FSMContext):
 @dp.message(BookingForm.role)
 async def proc_role(message: types.Message, state: FSMContext):
     await state.update_data(role=message.text)
-    sync_unconfirmed(await state.get_data(), "role_done")
+    sync_unconfirmed(await state.get_data(), "step_role")
     await message.answer("Ваш бизнес сейчас:", reply_markup=business_keyboard)
     await state.set_state(BookingForm.business_stage)
 
@@ -211,7 +208,7 @@ async def proc_role(message: types.Message, state: FSMContext):
 @dp.message(BookingForm.business_stage)
 async def proc_stage(message: types.Message, state: FSMContext):
     await state.update_data(business_stage=message.text)
-    sync_unconfirmed(await state.get_data(), "stage_done")
+    sync_unconfirmed(await state.get_data(), "step_stage")
     await message.answer("Есть ли у вас партнер?", reply_markup=partner_keyboard)
     await state.set_state(BookingForm.partner)
 
@@ -219,7 +216,7 @@ async def proc_stage(message: types.Message, state: FSMContext):
 @dp.message(BookingForm.partner)
 async def proc_partner(message: types.Message, state: FSMContext):
     await state.update_data(partner=message.text)
-    sync_unconfirmed(await state.get_data(), "partner_done")
+    sync_unconfirmed(await state.get_data(), "step_partner")
     await message.answer("Какую задачу хотите решить за 3 месяца?", reply_markup=task_keyboard)
     await state.set_state(BookingForm.main_task)
 
@@ -227,7 +224,7 @@ async def proc_partner(message: types.Message, state: FSMContext):
 @dp.message(BookingForm.main_task)
 async def proc_task(message: types.Message, state: FSMContext):
     await state.update_data(main_task=message.text)
-    sync_unconfirmed(await state.get_data(), "task_done")
+    sync_unconfirmed(await state.get_data(), "step_task")
     await message.answer("Удобное время для связи:", reply_markup=time_keyboard)
     await state.set_state(BookingForm.time_of_day)
 
@@ -238,51 +235,43 @@ async def proc_time(message: types.Message, state: FSMContext):
     data = await state.get_data()
     sync_unconfirmed(data, "awaiting_confirm")
 
-    summary = (f"📋 **Ваши данные:**\n\n"
-               f"👤 **Имя:** {data.get('name')}\n"
-               f"🎯 **Роль:** {data.get('role')}\n"
-               f"💼 **Бизнес:** {data.get('business_stage')}\n"
-               f"👥 **Партнёр:** {data.get('partner')}\n"
-               f"💡 **Задача:** {data.get('main_task')}\n"
-               f"⏰ **Время:** {data.get('time_of_day')}")
+    summary = (f"📋 **Ваши данные:**\n\n👤 Имя: {data.get('name')}\n🎯 Роль: {data.get('role')}\n"
+               f"💼 Бизнес: {data.get('business_stage')}\n👥 Партнёр: {data.get('partner')}\n"
+               f"💡 Задача: {data.get('main_task')}\n⏰ Время: {data.get('time_of_day')}")
 
-    # ЗДЕСЬ УДАЛЯЕМ КНОПКИ ВЫБОРА ВРЕМЕНИ
     await message.answer(summary, reply_markup=ReplyKeyboardRemove())
-    # И сразу отправляем инлайновую кнопку подтверждения
     await message.answer("Подтвердите данные для записи:", reply_markup=confirm_keyboard)
 
 
 @dp.callback_query(F.data == "confirm_final")
 async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if not data or not data.get("telegram_id"):
-        await callback.answer("Заявка уже отправлена.")
-        return
+    if not data or not data.get("telegram_id"): return
 
-    # Оповещение админу - ПРИОРИТЕТ 1
+    # 1. Уведомление админу
     if ADMIN_TELEGRAM_ID:
         try:
-            text_admin = (f"❤️ **НОВАЯ ЗАЯВКА**\n\n👤 {data.get('name')}\n🎯 {data.get('role')}\n"
-                          f"💼 {data.get('business_stage')}\n👥 {data.get('partner')}\n"
-                          f"💡 {data.get('main_task')}\n⏰ {data.get('time_of_day')}\n"
-                          f"📈 {data.get('source')}\n📱 @{callback.from_user.username or 'id' + str(callback.from_user.id)}")
-            await bot.send_message(ADMIN_TELEGRAM_ID, text_admin)
+            admin_msg = (f"❤️ **НОВАЯ ЗАЯВКА**\n\n👤 {data.get('name')}\n🎯 {data.get('role')}\n"
+                         f"💡 {data.get('main_task')}\n📈 {data.get('source')}_{data.get('ad_label')}\n"
+                         f"📱 @{callback.from_user.username or 'id' + str(callback.from_user.id)}")
+            await bot.send_message(ADMIN_TELEGRAM_ID, admin_msg)
         except:
             pass
 
-    # Запись в таблицу - ПРИОРИТЕТ 2
+    # 2. Запись в таблицу
     finalize_to_main(data)
 
-    # Ответ клиенту
-    thanks_text = ("✅ **Заявка принята!**\n\nСвяжусь с вами в течение 24 часов.\n\n"
-                   "🔗 [Программа и отзывы](https://prounityconsult.eu/businessaslove?utm_source=bot&utm_medium=confirmed)")
+    # 3. Разделение финала
+    source = data.get("source", "organic")
+    if source == "direct":
+        thanks_text = ("✅ **Спасибо. Заявка принята!**\n\nСвяжусь с вами в течение 24 часов. "
+                       "А пока ждете, изучите программу:\n"
+                       "🔗 [Посмотреть программу](https://prounityconsult.eu/businessaslove?utm_source=bot&utm_medium=confirmed)")
+    else:
+        thanks_text = ("✅ **Спасибо. Заявка принята!**\n\nСвяжусь с вами в течение 24 часов. До встречи!")
+
     await callback.message.edit_text(thanks_text, parse_mode="Markdown")
     await state.clear()
-
-
-@dp.message()
-async def echo_handler(message: types.Message):
-    await message.answer("Нажмите /start для начала")
 
 
 # ================== SERVER ==================
@@ -295,20 +284,14 @@ async def handle_webhook(request):
 
 async def on_startup(app):
     await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
-    scheduler.add_job(check_abandoned_carts, "interval", minutes=15)
+    scheduler.add_job(check_abandoned, "interval", minutes=15)
     scheduler.start()
-
-
-async def on_shutdown(app):
-    await bot.session.close()
-    scheduler.shutdown()
 
 
 app = web.Application()
 app.router.add_post("/webhook", handle_webhook)
 app.router.add_get("/", lambda r: web.Response(text="ok"))
 app.on_startup.append(on_startup)
-app.on_shutdown.append(on_shutdown)
 
 if __name__ == "__main__":
     web.run_app(app, host="0.0.0.0", port=PORT)
