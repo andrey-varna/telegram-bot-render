@@ -92,30 +92,28 @@ def sync_unconfirmed(data: dict, status: str):
 
 
 def finalize_to_main(data: dict):
-    """Записывает данные в основную таблицу и удаляет из временной."""
     try:
         tid = str(data.get("telegram_id"))
-
-        # Проверка на дубликат внутри функции записи
-        existing = None
+        # Защита от дублей
         try:
-            existing = main_sheet.find(tid, in_column=1)
+            if main_sheet.find(tid, in_column=1):
+                logging.info(f"Duplicate found for {tid}, skipping write.")
+                return True
         except:
             pass
 
-        if not existing:
-            row_main = [
-                tid, data.get("username", ""),
-                data.get("source", ""), data.get("campaign", ""),
-                data.get("ad_label", ""), data.get("name", ""),
-                data.get("role", ""), data.get("business_stage", ""),
-                data.get("partner", ""), data.get("main_task", ""),
-                data.get("time_of_day", ""),
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            ]
-            main_sheet.append_row(row_main)
+        row_main = [
+            tid, data.get("username", ""),
+            data.get("source", ""), data.get("campaign", ""),
+            data.get("ad_label", ""), data.get("name", ""),
+            data.get("role", ""), data.get("business_stage", ""),
+            data.get("partner", ""), data.get("main_task", ""),
+            data.get("time_of_day", ""),
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ]
+        main_sheet.append_row(row_main)
 
-        # Удаляем из временной в любом случае
+        # Очистка временной
         try:
             cell = unconfirmed_sheet.find(tid, in_column=1)
             if cell: unconfirmed_sheet.delete_rows(cell.row)
@@ -152,8 +150,7 @@ async def check_abandoned_carts():
                 unconfirmed_sheet.update_cell(i + 2, 8, status + "_admin_notified")
 
             if timedelta(days=1) <= diff < timedelta(days=2) and "msg1_sent" not in status:
-                text = (f"{name}, здравствуйте! Вы начали заполнять анкету на диагностику, но что-то отвлекло... "
-                        "Нажмите /start, чтобы продолжить.")
+                text = (f"{name}, здравствуйте! Вы начали заполнять анкету, но не закончили. Жду вас: /start")
                 try:
                     await bot.send_message(tid, text)
                     unconfirmed_sheet.update_cell(i + 2, 8, status + "_msg1_sent")
@@ -188,11 +185,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
     welcome_text = (
         "Здравствуйте.\n\n"
-        "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' — это про то, как быть сильной, не ослабляя партнёра. "
-        "И как создать дело, которое укрепляет отношения, а не разрушает их.\n\n"
-        "Диагностика — это первый шаг к тому, чтобы увидеть свою жизнь как систему. "
-        "За 40-60 минут мы найдём ключевые точки, где сейчас утекает ваша энергия и сила.\n\n"
-        "Как к вам можно обращаться?"
+        "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' — это про то, как быть сильной, не ослабляя партнёра.\n\n"
+        "Диагностика — это первый шаг. Как к вам можно обращаться?"
     )
     await message.answer(welcome_text, reply_markup=ReplyKeyboardRemove())
     await state.set_state(BookingForm.name)
@@ -251,57 +245,44 @@ async def proc_time(message: types.Message, state: FSMContext):
                f"👥 **Партнёр:** {data.get('partner')}\n"
                f"💡 **Задача:** {data.get('main_task')}\n"
                f"⏰ **Время:** {data.get('time_of_day')}")
-    await message.answer(summary, reply_markup=confirm_keyboard, parse_mode="Markdown")
+
+    # ЗДЕСЬ УДАЛЯЕМ КНОПКИ ВЫБОРА ВРЕМЕНИ
+    await message.answer(summary, reply_markup=ReplyKeyboardRemove())
+    # И сразу отправляем инлайновую кнопку подтверждения
+    await message.answer("Подтвердите данные для записи:", reply_markup=confirm_keyboard)
 
 
 @dp.callback_query(F.data == "confirm_final")
 async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-
     if not data or not data.get("telegram_id"):
-        await callback.answer("Заявка уже обработана.")
+        await callback.answer("Заявка уже отправлена.")
         return
 
-    # 1. СНАЧАЛА ОПОВЕЩЕНИЕ АДМИНУ
+    # Оповещение админу - ПРИОРИТЕТ 1
     if ADMIN_TELEGRAM_ID:
         try:
-            text_admin = (
-                f"❤️ **НОВАЯ ЗАЯВКА**\n\n"
-                f"👤 **Имя:** {data.get('name')}\n"
-                f"🎯 **Роль:** {data.get('role')}\n"
-                f"💼 **Бизнес:** {data.get('business_stage')}\n"
-                f"👥 **Партнёр:** {data.get('partner')}\n"
-                f"💡 **Задача:** {data.get('main_task')}\n"
-                f"⏰ **Время:** {data.get('time_of_day')}\n\n"
-                f"📈 **Метки:** `{data.get('source')}_{data.get('campaign')}`\n"
-                f"📱 **TG:** @{callback.from_user.username or 'скрыт'}"
-            )
-            await bot.send_message(ADMIN_TELEGRAM_ID, text_admin, parse_mode="Markdown")
-        except Exception as e:
-            logging.error(f"Admin notify error: {e}")
+            text_admin = (f"❤️ **НОВАЯ ЗАЯВКА**\n\n👤 {data.get('name')}\n🎯 {data.get('role')}\n"
+                          f"💼 {data.get('business_stage')}\n👥 {data.get('partner')}\n"
+                          f"💡 {data.get('main_task')}\n⏰ {data.get('time_of_day')}\n"
+                          f"📈 {data.get('source')}\n📱 @{callback.from_user.username or 'id' + str(callback.from_user.id)}")
+            await bot.send_message(ADMIN_TELEGRAM_ID, text_admin)
+        except:
+            pass
 
-    # 2. ЗАПИСЬ В ТАБЛИЦУ (с защитой от дублей внутри функции)
+    # Запись в таблицу - ПРИОРИТЕТ 2
     finalize_to_main(data)
 
-    # 3. ОТВЕТ КЛИЕНТУ С ПРОГРЕВОМ
-    thanks_text = (
-        "✅ **Отлично! Ваша заявка принята.**\n\n"
-        "📞 Я свяжусь с вами в течение 24 часов для согласования времени.\n\n"
-        "📚 **Пока вы ждете, узнайте больше о программе:**\n"
-        "🔗 [Читать программу и отзывы](https://prounityconsult.eu/businessaslove?utm_source=bot&utm_medium=confirmed)"
-    )
-
-    try:
-        await callback.message.edit_text(thanks_text, parse_mode="Markdown", disable_web_page_preview=False)
-    except:
-        await callback.message.answer(thanks_text, parse_mode="Markdown")
-
+    # Ответ клиенту
+    thanks_text = ("✅ **Заявка принята!**\n\nСвяжусь с вами в течение 24 часов.\n\n"
+                   "🔗 [Программа и отзывы](https://prounityconsult.eu/businessaslove?utm_source=bot&utm_medium=confirmed)")
+    await callback.message.edit_text(thanks_text, parse_mode="Markdown")
     await state.clear()
 
 
 @dp.message()
 async def echo_handler(message: types.Message):
-    await message.answer("Для запуска бота наберите команду /start")
+    await message.answer("Нажмите /start для начала")
 
 
 # ================== SERVER ==================
