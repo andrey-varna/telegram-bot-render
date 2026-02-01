@@ -73,7 +73,7 @@ confirm_keyboard = InlineKeyboardMarkup(
 # ================== ЛОГИКА ТАБЛИЦ ==================
 
 def sync_unconfirmed(data: dict, status: str):
-    """Пошаговое сохранение во временную таблицу для дожима."""
+    """Пошаговое сохранение для дожатия."""
     try:
         tid = str(data.get("telegram_id"))
         row = [
@@ -96,12 +96,13 @@ def sync_unconfirmed(data: dict, status: str):
 
 
 def finalize_to_main(data: dict):
-    """Перенос в основную таблицу с проверкой на дубликаты."""
+    """Перенос в основную таблицу с защитой от дублей."""
     try:
         tid = str(data.get("telegram_id"))
+        # Защита: не пишем, если ID уже есть в основной таблице
         try:
             if main_sheet.find(tid, in_column=1):
-                return True  # Уже есть
+                return True
         except:
             pass
 
@@ -116,6 +117,7 @@ def finalize_to_main(data: dict):
         ]
         main_sheet.append_row(row_main)
 
+        # Удаляем из временной
         try:
             cell = unconfirmed_sheet.find(tid, in_column=1)
             if cell: unconfirmed_sheet.delete_rows(cell.row)
@@ -123,27 +125,25 @@ def finalize_to_main(data: dict):
             pass
         return True
     except Exception as e:
-        logging.error(f"Error finalize_to_main: {e}")
+        logging.error(f"Error finalize: {e}")
         return False
 
 
 # ================== ДОЖИМ (SCHEDULER) ==================
 
 async def check_abandoned():
-    """Проверка застрявших анкет каждые 15 мин."""
+    """Проверка брошенных анкет каждые 15 минут."""
     try:
         records = unconfirmed_sheet.get_all_records()
         now = datetime.now()
         for i, row in enumerate(records):
             if not row.get('started_at') or 'msg_sent' in str(row.get('status')): continue
-            start_dt = datetime.strptime(row['started_at'], "%Y-%m-%d %H:%M:%S")
-            diff = now - start_dt
 
-            # Если прошло больше 30 мин, но меньше суток - мягко напоминаем
-            if timedelta(minutes=30) <= diff <= timedelta(hours=24):
+            start_dt = datetime.strptime(row['started_at'], "%Y-%m-%d %H:%M:%S")
+            if timedelta(minutes=30) <= (now - start_dt) <= timedelta(hours=24):
                 tid = row.get('telegram_id')
                 name = row.get('name') or "Дорогая коллега"
-                text = f"{name}, вы остановились на заполнении анкеты. Чтобы мы могли подготовить для вас диагностику, завершите опрос: /start"
+                text = f"{name}, вы начали заполнять анкету на диагностику, но не завершили. Чтобы мы могли подготовиться к встрече, ответьте на оставшиеся вопросы: /start"
                 try:
                     await bot.send_message(tid, text)
                     unconfirmed_sheet.update_cell(i + 2, 8, str(row.get('status')) + "_msg_sent")
@@ -160,6 +160,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     args = message.text.split()
     source, campaign, ad_label = "organic", "none", "none"
+
     if len(args) > 1:
         parts = args[1].split("_")
         if len(parts) >= 1: source = parts[0]
@@ -181,7 +182,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
         "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' — это про то, как быть сильной, не ослабляя партнёра. "
         "И как создать дело, которое укрепляет отношения, а не разрушает их.\n\n"
         "Диагностика — это первый шаг к тому, чтобы увидеть свою жизнь как систему. "
-        "За 40-60 минут мы найдём ключевые точки, где сейчас утекает ваша энергия и сила.\n\n"
+        "За 40-60 минут мы найдём ключевые точки, где сейчас утекает ваша энергия и сила. "
+        "Увидим, что даёт вам опору, а что тормозит движение.\n\n"
+        "Чтобы подготовиться и провести сессию максимально эффективно, мне важно узнать о вас немного больше. "
         "Ответьте, пожалуйста, на несколько вопросов — это займёт 2-3 минуты.\n\n"
         "Как к вам можно обращаться?"
     )
@@ -235,9 +238,13 @@ async def proc_time(message: types.Message, state: FSMContext):
     data = await state.get_data()
     sync_unconfirmed(data, "awaiting_confirm")
 
-    summary = (f"📋 **Ваши данные:**\n\n👤 Имя: {data.get('name')}\n🎯 Роль: {data.get('role')}\n"
-               f"💼 Бизнес: {data.get('business_stage')}\n👥 Партнёр: {data.get('partner')}\n"
-               f"💡 Задача: {data.get('main_task')}\n⏰ Время: {data.get('time_of_day')}")
+    summary = (f"📋 **Ваши данные:**\n\n"
+               f"👤 **Имя:** {data.get('name')}\n"
+               f"🎯 **Роль:** {data.get('role')}\n"
+               f"💼 **Бизнес:** {data.get('business_stage')}\n"
+               f"👥 **Партнёр:** {data.get('partner')}\n"
+               f"💡 **Задача:** {data.get('main_task')}\n"
+               f"⏰ **Время:** {data.get('time_of_day')}")
 
     await message.answer(summary, reply_markup=ReplyKeyboardRemove())
     await message.answer("Подтвердите данные для записи:", reply_markup=confirm_keyboard)
@@ -248,27 +255,30 @@ async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     if not data or not data.get("telegram_id"): return
 
-    # 1. Уведомление админу
+    # 1. Сначала ОПОВЕЩЕНИЕ ВАМ
     if ADMIN_TELEGRAM_ID:
         try:
             admin_msg = (f"❤️ **НОВАЯ ЗАЯВКА**\n\n👤 {data.get('name')}\n🎯 {data.get('role')}\n"
-                         f"💡 {data.get('main_task')}\n📈 {data.get('source')}_{data.get('ad_label')}\n"
+                         f"💼 {data.get('business_stage')}\n👥 {data.get('partner')}\n"
+                         f"💡 {data.get('main_task')}\n⏰ {data.get('time_of_day')}\n"
+                         f"📊 {data.get('source')}_{data.get('campaign')}_{data.get('ad_label')}\n"
                          f"📱 @{callback.from_user.username or 'id' + str(callback.from_user.id)}")
             await bot.send_message(ADMIN_TELEGRAM_ID, admin_msg)
         except:
             pass
 
-    # 2. Запись в таблицу
+    # 2. ЗАПИСЬ В ТАБЛИЦУ
     finalize_to_main(data)
 
-    # 3. Разделение финала
+    # 3. УМНЫЙ ФИНАЛ
     source = data.get("source", "organic")
-    if source == "direct":
-        thanks_text = ("✅ **Спасибо. Заявка принята!**\n\nСвяжусь с вами в течение 24 часов. "
-                       "А пока ждете, изучите программу:\n"
-                       "🔗 [Посмотреть программу](https://prounityconsult.eu/businessaslove?utm_source=bot&utm_medium=confirmed)")
+    if source == "site":
+        thanks_text = (
+            "✅ **Заявка принята!**\n\nЯ свяжусь с вами в течение 24 часов для согласования времени. До встречи!")
     else:
-        thanks_text = ("✅ **Спасибо. Заявка принята!**\n\nСвяжусь с вами в течение 24 часов. До встречи!")
+        # Если это прямая реклама или органика - даем ссылку на лендинг для прогрева
+        thanks_text = ("✅ **Заявка принята!**\n\nЯ свяжусь с вами в течение 24 часов.\n\n"
+                       "🔗 [Ознакомьтесь с программой и отзывами](https://prounityconsult.eu/businessaslove?utm_source=bot&utm_medium=confirmed)")
 
     await callback.message.edit_text(thanks_text, parse_mode="Markdown")
     await state.clear()
