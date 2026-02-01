@@ -92,19 +92,32 @@ def sync_unconfirmed(data: dict, status: str):
 
 
 def finalize_to_main(data: dict):
+    """Записывает данные в основную таблицу и удаляет из временной."""
     try:
-        row_main = [
-            str(data.get("telegram_id")), data.get("username", ""),
-            data.get("source", ""), data.get("campaign", ""),
-            data.get("ad_label", ""), data.get("name", ""),
-            data.get("role", ""), data.get("business_stage", ""),
-            data.get("partner", ""), data.get("main_task", ""),
-            data.get("time_of_day", ""),
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ]
-        main_sheet.append_row(row_main)
+        tid = str(data.get("telegram_id"))
+
+        # Проверка на дубликат внутри функции записи
+        existing = None
         try:
-            cell = unconfirmed_sheet.find(str(data.get("telegram_id")), in_column=1)
+            existing = main_sheet.find(tid, in_column=1)
+        except:
+            pass
+
+        if not existing:
+            row_main = [
+                tid, data.get("username", ""),
+                data.get("source", ""), data.get("campaign", ""),
+                data.get("ad_label", ""), data.get("name", ""),
+                data.get("role", ""), data.get("business_stage", ""),
+                data.get("partner", ""), data.get("main_task", ""),
+                data.get("time_of_day", ""),
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ]
+            main_sheet.append_row(row_main)
+
+        # Удаляем из временной в любом случае
+        try:
+            cell = unconfirmed_sheet.find(tid, in_column=1)
             if cell: unconfirmed_sheet.delete_rows(cell.row)
         except:
             pass
@@ -114,13 +127,12 @@ def finalize_to_main(data: dict):
         return False
 
 
-# ================== АВТО-ДОЖАТИЕ И УВЕДОМЛЕНИЯ ==================
+# ================== АВТО-ДОЖАТИЕ ==================
 
 async def check_abandoned_carts():
     try:
         records = unconfirmed_sheet.get_all_records()
         now = datetime.now()
-
         for i, row in enumerate(records):
             if not row.get('started_at'): continue
             try:
@@ -133,37 +145,20 @@ async def check_abandoned_carts():
             status = str(row.get('status', ''))
             name = row.get('name') or "Дорогая коллега"
 
-            # 1. Уведомление админу (через 10 мин)
             if timedelta(minutes=10) <= diff < timedelta(hours=23) and "admin_notified" not in status:
                 admin_text = (f"⚠️ **НА ДОРАБОТКУ**\n\n👤 @{row.get('username')}\n"
                               f"📝 Имя: {row.get('name') or 'не указано'}\n📍 Шаг: {status}")
                 await bot.send_message(ADMIN_TELEGRAM_ID, admin_text)
                 unconfirmed_sheet.update_cell(i + 2, 8, status + "_admin_notified")
 
-            # 2. ПЕРВОЕ КАСАНИЕ (через 24 часа)
             if timedelta(days=1) <= diff < timedelta(days=2) and "msg1_sent" not in status:
-                text = (f"{name}, здравствуйте! Вы начали заполнять анкету на диагностику, но что-то отвлекло. "
-                        "Возможно, это был знак, что нужно взять паузу? 😊\n\n"
-                        "Мы остановились на важном месте. Чтобы мы могли разобрать вашу ситуацию, "
-                        "нужно завершить опрос. Нажмите /start, чтобы продолжить.")
+                text = (f"{name}, здравствуйте! Вы начали заполнять анкету на диагностику, но что-то отвлекло... "
+                        "Нажмите /start, чтобы продолжить.")
                 try:
                     await bot.send_message(tid, text)
                     unconfirmed_sheet.update_cell(i + 2, 8, status + "_msg1_sent")
                 except:
                     pass
-
-            # 3. ВТОРОЕ КАСАНИЕ (через 3 дня)
-            if timedelta(days=3) <= diff < timedelta(days=4) and "msg2_sent" not in status:
-                text = (f"{name}, многие собственники бизнеса боятся заглядывать в систему своего дела, "
-                        "потому что боятся увидеть там хаос. Но хаос — это просто энергия без фокуса.\n\n"
-                        "Ваша анкета всё еще ждет. Если баланс между делом и любовью для вас важен — "
-                        "давайте доведем дело до конца. Жду вас здесь: /start")
-                try:
-                    await bot.send_message(tid, text)
-                    unconfirmed_sheet.update_cell(i + 2, 8, status + "_msg2_sent")
-                except:
-                    pass
-
     except Exception as e:
         logging.error(f"Scheduler error: {e}")
 
@@ -191,17 +186,12 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.update_data(**start_data)
     sync_unconfirmed(start_data, "started")
 
-    # ПОЛНЫЙ ПРИВЕТСТВЕННЫЙ ТЕКСТ
     welcome_text = (
         "Здравствуйте.\n\n"
-        "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' "
-        "— это про то, как быть сильной, не ослабляя партнёра. "
+        "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' — это про то, как быть сильной, не ослабляя партнёра. "
         "И как создать дело, которое укрепляет отношения, а не разрушает их.\n\n"
         "Диагностика — это первый шаг к тому, чтобы увидеть свою жизнь как систему. "
-        "За 40-60 минут мы найдём ключевые точки, где сейчас утекает ваша энергия и сила. "
-        "Увидим, что даёт вам опору, а что тормозит движение.\n\n"
-        "Чтобы подготовиться и провести сессию максимально эффективно, мне важно узнать о вас немного больше. "
-        "Ответьте, пожалуйста, на несколько вопросов — это займёт 2-3 минуты.\n\n"
+        "За 40-60 минут мы найдём ключевые точки, где сейчас утекает ваша энергия и сила.\n\n"
         "Как к вам можно обращаться?"
     )
     await message.answer(welcome_text, reply_markup=ReplyKeyboardRemove())
@@ -255,21 +245,26 @@ async def proc_time(message: types.Message, state: FSMContext):
     sync_unconfirmed(data, "awaiting_confirm")
 
     summary = (f"📋 **Ваши данные:**\n\n"
-               f"👤 **Имя:** {data['name']}\n"
-               f"🎯 **Роль:** {data['role']}\n"
-               f"💼 **Бизнес:** {data['business_stage']}\n"
-               f"👥 **Партнёр:** {data['partner']}\n"
-               f"💡 **Задача:** {data['main_task']}\n"
-               f"⏰ **Время:** {data['time_of_day']}")
+               f"👤 **Имя:** {data.get('name')}\n"
+               f"🎯 **Роль:** {data.get('role')}\n"
+               f"💼 **Бизнес:** {data.get('business_stage')}\n"
+               f"👥 **Партнёр:** {data.get('partner')}\n"
+               f"💡 **Задача:** {data.get('main_task')}\n"
+               f"⏰ **Время:** {data.get('time_of_day')}")
     await message.answer(summary, reply_markup=confirm_keyboard, parse_mode="Markdown")
 
 
 @dp.callback_query(F.data == "confirm_final")
 async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if finalize_to_main(data):
-        await callback.message.edit_text("✅ Спасибо! Данные подтверждены. Скоро свяжусь с вами.")
-        if ADMIN_TELEGRAM_ID:
+
+    if not data or not data.get("telegram_id"):
+        await callback.answer("Заявка уже обработана.")
+        return
+
+    # 1. СНАЧАЛА ОПОВЕЩЕНИЕ АДМИНУ
+    if ADMIN_TELEGRAM_ID:
+        try:
             text_admin = (
                 f"❤️ **НОВАЯ ЗАЯВКА**\n\n"
                 f"👤 **Имя:** {data.get('name')}\n"
@@ -282,9 +277,26 @@ async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
                 f"📱 **TG:** @{callback.from_user.username or 'скрыт'}"
             )
             await bot.send_message(ADMIN_TELEGRAM_ID, text_admin, parse_mode="Markdown")
-        await state.clear()
-    else:
-        await callback.answer("Ошибка сохранения", show_alert=True)
+        except Exception as e:
+            logging.error(f"Admin notify error: {e}")
+
+    # 2. ЗАПИСЬ В ТАБЛИЦУ (с защитой от дублей внутри функции)
+    finalize_to_main(data)
+
+    # 3. ОТВЕТ КЛИЕНТУ С ПРОГРЕВОМ
+    thanks_text = (
+        "✅ **Отлично! Ваша заявка принята.**\n\n"
+        "📞 Я свяжусь с вами в течение 24 часов для согласования времени.\n\n"
+        "📚 **Пока вы ждете, узнайте больше о программе:**\n"
+        "🔗 [Читать программу и отзывы](https://prounityconsult.eu/businessaslove?utm_source=bot&utm_medium=confirmed)"
+    )
+
+    try:
+        await callback.message.edit_text(thanks_text, parse_mode="Markdown", disable_web_page_preview=False)
+    except:
+        await callback.message.answer(thanks_text, parse_mode="Markdown")
+
+    await state.clear()
 
 
 @dp.message()
