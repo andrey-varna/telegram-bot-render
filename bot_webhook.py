@@ -85,30 +85,24 @@ confirm_keyboard = InlineKeyboardMarkup(
 
 # ================== ЛОГИКА ТАБЛИЦ ==================
 
-def sync_unconfirmed(data: dict, status: str):
+def sync_unconfirmed(data: dict, status_or_time: str):
     try:
         tid = str(data.get("telegram_id"))
+        target = data.get("target", "w")
+        is_cd = (target == "cd")
+
         row = [
-            tid, data.get("username", ""), data.get("name", ""),
-            data.get("role", ""), data.get("business_stage", ""),
-            data.get("partner", ""), data.get("time_of_day", ""),
-            status, f"{data.get('target', 'w')}_{data.get('source', 'organic')}",
-            data.get("campaign", ""), data.get("email", ""),
-            data.get("started_at", "")
+            tid, data.get("username", ""), target, data.get("source", ""), data.get("campaign", ""),
+            data.get("name", ""), data.get("role", ""), data.get("business_stage", ""), data.get("partner", ""),
+            ("" if is_cd else data.get("main_task", "")),  # J: program_pain
+            (data.get("main_task", "") if is_cd else ""),  # K: cd_task
+            data.get("time_of_day", ""), data.get("email", ""),
+            status_or_time  # N: created_at (используется для планировщика)
         ]
+
         cells = unconfirmed_sheet.findall(tid, in_column=1)
-        target_row = None
         if cells:
-            last_cell = cells[-1]
-            try:
-                last_time_str = unconfirmed_sheet.cell(last_cell.row, 12).value
-                last_time = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
-                if datetime.now() - last_time < timedelta(hours=3):
-                    target_row = last_cell.row
-            except:
-                pass
-        if target_row:
-            unconfirmed_sheet.update(f"A{target_row}:L{target_row}", [row])
+            unconfirmed_sheet.update(f"A{cells[-1].row}:N{cells[-1].row}", [row])
         else:
             unconfirmed_sheet.append_row(row)
     except Exception as e:
@@ -117,63 +111,68 @@ def sync_unconfirmed(data: dict, status: str):
 
 def finalize_to_main(data: dict):
     try:
+        target = data.get("target", "w")
+        is_cd = (target == "cd")
+        tid = str(data.get("telegram_id"))
+
         row_main = [
-            str(data.get("telegram_id")), data.get("username", ""),
-            data.get("target", "w"), data.get("source", ""),
-            data.get("campaign", ""), data.get("name", ""),
-            data.get("role", ""), data.get("business_stage", ""),
-            data.get("partner", ""), data.get("main_task", ""),
+            tid, data.get("username", ""), target, data.get("source", ""), data.get("campaign", ""),
+            data.get("name", ""), data.get("role", ""), data.get("business_stage", ""), data.get("partner", ""),
+            ("" if is_cd else data.get("main_task", "")),  # J
+            (data.get("main_task", "") if is_cd else ""),  # K
             data.get("time_of_day", ""), data.get("email", ""),
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # N
         ]
+
         main_sheet.append_row(row_main)
-        cells = unconfirmed_sheet.findall(str(data.get("telegram_id")), in_column=1)
-        for cell in reversed(cells): unconfirmed_sheet.delete_rows(cell.row)
+
+        try:
+            cell = unconfirmed_sheet.find(tid, in_column=1)
+            if cell: unconfirmed_sheet.delete_rows(cell.row)
+        except:
+            pass
         return True
     except Exception as e:
         logging.error(f"Error finalize: {e}")
         return False
 
 
-# ================== ПЛАНИРОВЩИК ==================
+# ================== ПЛАНИРОВЩИК (ДОЖАТИЕ) ==================
 
 async def check_abandoned_carts():
     try:
         records = unconfirmed_sheet.get_all_records()
         now = datetime.now()
         for i, row in enumerate(records):
-            if not row.get('started_at'): continue
+            # Бот ищет время в колонке created_at (N)
             try:
-                start_dt = datetime.strptime(row['started_at'], "%Y-%m-%d %H:%M:%S")
+                start_dt = datetime.strptime(str(row.get('created_at')), "%Y-%m-%d %H:%M:%S")
             except:
                 continue
-            diff = now - start_dt
-            status, tid, row_idx = str(row.get('status', '')), row.get('telegram_id'), i + 2
-            is_cd = "cd" in status or "cd" in str(row.get('source', ''))
 
-            if timedelta(minutes=15) <= diff < timedelta(hours=1) and "_n1" not in status:
-                msg = "🎁 Почти готово! Ответьте на пару вопросов и заберите ссылку на подарок." if is_cd else "Вы начали регистрацию на программу, но не завершили её. Есть ли у вас вопросы?"
+            diff = now - start_dt
+            tid = row.get('telegram_id')
+            is_cd = "cd" in str(row.get('target', ''))
+            row_idx = i + 2
+
+            # 15 минут
+            if timedelta(minutes=15) <= diff < timedelta(hours=1) and "n1" not in str(row.get('role_barrier')):
+                msg = "🎁 Почти готово! Ответьте на пару вопросов и заберите подарок." if is_cd else "Вы начали регистрацию, но не завершили её. Есть вопросы?"
                 try:
                     await bot.send_message(tid, msg)
-                    unconfirmed_sheet.update_cell(row_idx, 8, status + "_n1")
+                    unconfirmed_sheet.update_cell(row_idx, 7, "notified_n1")  # Пишем метку в G для простоты
                 except:
                     pass
-            elif timedelta(days=3) <= diff < timedelta(days=4) and "_n2" not in status:
-                msg = "Ваша 'Формула Результата' ждет вас уже 3 дня. Продолжим?" if is_cd else "Мы сохранили ваше место на программе. Актуально ли еще для вас?"
+            # 3 дня
+            elif timedelta(days=3) <= diff < timedelta(days=4) and "n2" not in str(row.get('role_barrier')):
+                msg = "Ваша 'Формула Результата' всё еще ждет вас." if is_cd else "Мы сохранили ваше место на программу. Актуально?"
                 try:
                     await bot.send_message(tid, msg)
-                    unconfirmed_sheet.update_cell(row_idx, 8, status + "_n2")
+                    unconfirmed_sheet.update_cell(row_idx, 7, "notified_n2")
                 except:
                     pass
-            elif timedelta(days=10) <= diff < timedelta(days=11) and "_n3" not in status:
-                msg = "Это наше финальное напоминание. Ссылка на подарок сгорит через 24 часа." if is_cd else "Это последнее напоминание. Мы верим в ваш результат. Ждем решения!"
-                try:
-                    await bot.send_message(tid, msg)
-                    unconfirmed_sheet.update_cell(row_idx, 8, status + "_n3")
-                except:
-                    pass
-    except:
-        pass
+    except Exception as e:
+        logging.error(f"Scheduler error: {e}")
 
 
 # ================== HANDLERS ==================
@@ -186,22 +185,33 @@ async def cmd_start(message: types.Message, state: FSMContext):
     parts = param.split("_")
     target = parts[0] if parts[0] in ["w", "m", "cd", "cw", "cm"] else "w"
 
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     start_data = {
         "telegram_id": message.from_user.id,
         "username": message.from_user.username or "none",
         "target": target, "source": parts[1] if len(parts) > 1 else "organic",
         "campaign": parts[2] if len(parts) > 2 else "none",
-        "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "started_at": now_str,
         "name": "", "role": "", "business_stage": "", "partner": "", "main_task": "", "time_of_day": "", "email": ""
     }
     await state.update_data(**start_data)
-    sync_unconfirmed(start_data, f"start_{target}")
+    sync_unconfirmed(start_data, now_str)  # Записываем время в колонку N
 
     if target == "cd":
         text = "Здравствуйте! Спасибо за участие в кастдеве. В благодарность в конце я пришлю вам ссылку на расчет 'Формулы Результата'.\n\nКак к вам обращаться?"
     else:
-        text = (
-            "Здравствуйте.\n\nРада, что вы здесь. Программа 'Бизнес как продолжение любви' — это про то, как создать дело, которое укрепляет отношения...\n\nКак к вам обращаться?")
+        text = ("Здравствуйте.\n\n"
+        "Рада, что вы здесь. Программа 'Бизнес как продолжение любви'"
+        "- это про то, как быть сильной, не ослабляя партнёра. "
+        "И как создать дело, которое укрепляет отношения, а не разрушает их.\n\n"
+        "Диагностика - это первый шаг к тому, чтобы увидеть свою жизнь "
+        "как систему. За 40-60 минут мы найдём ключевые точки, "
+        "где сейчас утекает ваша энергия и сила."
+        "Увидим, что даёт вам опору, а что тормозит движение.\n\n" 
+        "Чтобы подготовиться и провести сессию максимально эффективно, " 
+        "мне важно узнать о вас немного больше. "
+        "Ответьте, пожалуйста, на несколько вопросов - это займёт 2-3 минуты.\n\n" 
+        "Как к вам можно обращаться?")
 
     await message.answer(text, reply_markup=ReplyKeyboardRemove())
     await state.set_state(BookingForm.name)
@@ -293,21 +303,22 @@ async def proc_email(message: types.Message, state: FSMContext):
 async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     target = data.get("target", "w")
-    admin_to_notify = None
 
     if finalize_to_main(data):
         if target == "cd":
-            await callback.message.edit_text("✅ Ссылка: https://forms.gle/nDYzDLtffxyAcsvS7")
-            admin_to_notify = ADMIN_MUZH_ID
-            text_admin = f"📊 **КАСТДЕВ**\n👤 {data.get('name')}\n📧 {data.get('email')}\n🎯 {data.get('main_task')}\n📱 @{data.get('username')}"
+            await callback.message.edit_text("✅ Спасибо! Ваша ссылка: https://forms.gle/nDYzDLtffxyAcsvS7")
+            admin_id, label = ADMIN_MUZH_ID, "📊 КАСТДЕВ"
+            details = f"📧 Email: {data.get('email')}\n🎯 Задача: {data.get('main_task')}"
         else:
-            await callback.message.edit_text("✅ Данные приняты!")
-            admin_to_notify = ADMIN_MUZH_ID if target in ["m", "cm"] else ADMIN_ZHENA_ID
-            text_admin = f"🚀 **ЗАЯВКА**\n👤 {data.get('name')}\n🔥 БОЛЬ: {data.get('main_task')}\n🕒 ВРЕМЯ: {data.get('time_of_day')}\n📱 @{data.get('username')}"
+            await callback.message.edit_text("✅ Данные приняты! Мы свяжемся с вами.")
+            admin_id = ADMIN_MUZH_ID if target in ["m", "cm"] else ADMIN_ZHENA_ID
+            label = "🚀 ЗАЯВКА НА ПРОГРАММУ"
+            details = f"🔥 БОЛЬ: {data.get('main_task')}\n🕒 ВРЕМЯ: {data.get('time_of_day')}"
 
-        if admin_to_notify:
+        if admin_id:
+            admin_text = f"{label}\n\n👤 Имя: {data.get('name')}\n{details}\n📱 Контакт: @{data.get('username')}"
             try:
-                await bot.send_message(admin_to_notify, text_admin, parse_mode="Markdown")
+                await bot.send_message(admin_id, admin_text)
             except:
                 pass
         await state.clear()
