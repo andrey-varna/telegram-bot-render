@@ -59,6 +59,17 @@ def get_reply_kb(options):
     )
 
 
+role_kb = get_reply_kb(["Собственник бизнеса", "CEO / управляющий", "Предприниматель", "Я эксперт/фрилансер"])
+stage_kb = get_reply_kb(["Только запускаю", "Действующий бизнес", "Масштабирую"])
+partner_kb = get_reply_kb(["Да", "Нет, но хочу", "Нет"])
+pain_kb = get_reply_kb([
+    "Перестать всё контролировать и тащить на себе",
+    "Вернуть страсть и близость, не теряя доход",
+    "Распределить роли, чтобы не конфликтовать",
+    "Выйти на новый уровень дохода без выгорания"
+])
+time_kb = get_reply_kb(["Утро", "День", "Вечер"])
+
 cd_barrier_kb = get_reply_kb(
     ["Всё тащу на себе (операционка)", "Конфликты или холод в отношениях", "Команда не тянет / нет системы",
      "Потерял(а) смысл и драйв"])
@@ -81,11 +92,10 @@ def sync_unconfirmed(data: dict, status: str):
             tid, data.get("username", ""), data.get("name", ""),
             data.get("role", ""), data.get("business_stage", ""),
             data.get("partner", ""), data.get("time_of_day", ""),
-            status, f"{data.get('target')}_{data.get('source')}",
+            status, f"{data.get('target', 'w')}_{data.get('source', 'organic')}",
             data.get("campaign", ""), data.get("email", ""),
             data.get("started_at", "")
         ]
-
         cells = unconfirmed_sheet.findall(tid, in_column=1)
         target_row = None
         if cells:
@@ -97,20 +107,19 @@ def sync_unconfirmed(data: dict, status: str):
                     target_row = last_cell.row
             except:
                 pass
-
         if target_row:
             unconfirmed_sheet.update(f"A{target_row}:L{target_row}", [row])
         else:
             unconfirmed_sheet.append_row(row)
     except Exception as e:
-        logging.error(f"Error sync_unconfirmed: {e}")
+        logging.error(f"Error sync: {e}")
 
 
 def finalize_to_main(data: dict):
     try:
         row_main = [
             str(data.get("telegram_id")), data.get("username", ""),
-            data.get("target", ""), data.get("source", ""),
+            data.get("target", "w"), data.get("source", ""),
             data.get("campaign", ""), data.get("name", ""),
             data.get("role", ""), data.get("business_stage", ""),
             data.get("partner", ""), data.get("main_task", ""),
@@ -118,64 +127,53 @@ def finalize_to_main(data: dict):
             datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ]
         main_sheet.append_row(row_main)
-        # После финализации удаляем все временные записи этого юзера
         cells = unconfirmed_sheet.findall(str(data.get("telegram_id")), in_column=1)
-        for cell in reversed(cells):
-            unconfirmed_sheet.delete_rows(cell.row)
+        for cell in reversed(cells): unconfirmed_sheet.delete_rows(cell.row)
         return True
     except Exception as e:
-        logging.error(f"Error finalize_to_main: {e}")
+        logging.error(f"Error finalize: {e}")
         return False
 
 
-# ================== ПЛАНИРОВЩИК (ДОЖАТИЕ) ==================
+# ================== ПЛАНИРОВЩИК ==================
 
 async def check_abandoned_carts():
     try:
         records = unconfirmed_sheet.get_all_records()
         now = datetime.now()
-
         for i, row in enumerate(records):
             if not row.get('started_at'): continue
             try:
                 start_dt = datetime.strptime(row['started_at'], "%Y-%m-%d %H:%M:%S")
             except:
                 continue
-
             diff = now - start_dt
-            status = str(row.get('status', ''))
-            tid = row.get('telegram_id')
+            status, tid, row_idx = str(row.get('status', '')), row.get('telegram_id'), i + 2
             is_cd = "cd" in status or "cd" in str(row.get('source', ''))
-            row_idx = i + 2
 
-            # 1. ПЕРВОЕ ДОЖАТИЕ (15 МИНУТ)
-            if timedelta(minutes=15) <= diff < timedelta(hours=1) and "n1" not in status:
-                msg = "🎁 Вы начали кастдев, но не получили ссылку на формулу. Осталось пару вопросов!" if is_cd else "Вы остановились в шаге от записи на программу. Нужна помощь?"
+            if timedelta(minutes=15) <= diff < timedelta(hours=1) and "_n1" not in status:
+                msg = "🎁 Почти готово! Ответьте на пару вопросов и заберите ссылку на подарок." if is_cd else "Вы начали регистрацию на программу, но не завершили её. Есть ли у вас вопросы?"
                 try:
                     await bot.send_message(tid, msg)
                     unconfirmed_sheet.update_cell(row_idx, 8, status + "_n1")
                 except:
                     pass
-
-            # 2. ВТОРОЕ ДОЖАТИЕ (3 ДНЯ)
-            elif timedelta(days=3) <= diff < timedelta(days=4) and "n2" not in status:
-                msg = "Прошло 3 дня, а ваша 'Формула Результата' всё еще не рассчитана. Это ваш рычаг роста, не упускайте его!" if is_cd else "Мы всё еще ждем вас на программе. Обстоятельства мешают росту или остались сомнения?"
+            elif timedelta(days=3) <= diff < timedelta(days=4) and "_n2" not in status:
+                msg = "Ваша 'Формула Результата' ждет вас уже 3 дня. Продолжим?" if is_cd else "Мы сохранили ваше место на программе. Актуально ли еще для вас?"
                 try:
                     await bot.send_message(tid, msg)
                     unconfirmed_sheet.update_cell(row_idx, 8, status + "_n2")
                 except:
                     pass
-
-            # 3. ФИНАЛЬНОЕ (10 ДНЕЙ)
-            elif timedelta(days=10) <= diff < timedelta(days=11) and "n3" not in status:
-                msg = "Финальное напоминание: ссылка на расчет формулы активна еще 24 часа. Ждем вас!" if is_cd else "Это наше последнее напоминание. Мы верим в ваш результат, но выбор за вами. Удачи!"
+            elif timedelta(days=10) <= diff < timedelta(days=11) and "_n3" not in status:
+                msg = "Это наше финальное напоминание. Ссылка на подарок сгорит через 24 часа." if is_cd else "Это последнее напоминание. Мы верим в ваш результат. Ждем решения!"
                 try:
                     await bot.send_message(tid, msg)
                     unconfirmed_sheet.update_cell(row_idx, 8, status + "_n3")
                 except:
                     pass
-    except Exception as e:
-        logging.error(f"Scheduler error: {e}")
+    except:
+        pass
 
 
 # ================== HANDLERS ==================
@@ -193,12 +191,18 @@ async def cmd_start(message: types.Message, state: FSMContext):
         "username": message.from_user.username or "none",
         "target": target, "source": parts[1] if len(parts) > 1 else "organic",
         "campaign": parts[2] if len(parts) > 2 else "none",
-        "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "name": "", "role": "", "business_stage": "", "partner": "", "main_task": "", "time_of_day": "", "email": ""
     }
     await state.update_data(**start_data)
     sync_unconfirmed(start_data, f"start_{target}")
 
-    text = "Здравствуйте! Спасибо за участие в кастдеве. В конце — ссылка на подарок!\nКак к вам обращаться?" if target == "cd" else "Приветствуем! Программа 'Бизнес как продолжение любви' на связи.\nКак к вам обращаться?"
+    if target == "cd":
+        text = "Здравствуйте! Спасибо за участие в кастдеве. В благодарность в конце я пришлю вам ссылку на расчет 'Формулы Результата'.\n\nКак к вам обращаться?"
+    else:
+        text = (
+            "Здравствуйте.\n\nРада, что вы здесь. Программа 'Бизнес как продолжение любви' — это про то, как создать дело, которое укрепляет отношения...\n\nКак к вам обращаться?")
+
     await message.answer(text, reply_markup=ReplyKeyboardRemove())
     await state.set_state(BookingForm.name)
 
@@ -209,10 +213,9 @@ async def proc_name(message: types.Message, state: FSMContext):
     data = await state.get_data()
     sync_unconfirmed(data, "name_done")
     if data['target'] == 'cd':
-        await message.answer("Что забирает энергию и мешает росту?", reply_markup=cd_barrier_kb)
+        await message.answer("Что сейчас больше всего забирает энергию?", reply_markup=cd_barrier_kb)
     else:
-        await message.answer("Ваша роль в бизнесе:",
-                             reply_markup=get_reply_kb(["Собственник", "CEO", "Предприниматель", "Эксперт"]))
+        await message.answer("Ваша роль в бизнесе:", reply_markup=role_kb)
     await state.set_state(BookingForm.role)
 
 
@@ -224,7 +227,7 @@ async def proc_role(message: types.Message, state: FSMContext):
     if data['target'] == 'cd':
         await message.answer("Связаны ли бизнес и ситуация дома?", reply_markup=cd_link_kb)
     else:
-        await message.answer("Стадия бизнеса:", reply_markup=get_reply_kb(["Старт", "Действующий", "Масштабирую"]))
+        await message.answer("Ваш бизнес сейчас:", reply_markup=stage_kb)
     await state.set_state(BookingForm.business_stage)
 
 
@@ -236,7 +239,7 @@ async def proc_stage(message: types.Message, state: FSMContext):
     if data['target'] == 'cd':
         await message.answer("Какой риск самый критичный?", reply_markup=cd_risk_kb)
     else:
-        await message.answer("Есть ли партнер?", reply_markup=get_reply_kb(["Да", "Нет"]))
+        await message.answer("Есть ли у вас партнер?", reply_markup=partner_kb)
     await state.set_state(BookingForm.partner)
 
 
@@ -244,50 +247,69 @@ async def proc_stage(message: types.Message, state: FSMContext):
 async def proc_partner(message: types.Message, state: FSMContext):
     await state.update_data(partner=message.text)
     data = await state.get_data()
+    sync_unconfirmed(data, "partner_done")
     if data['target'] == 'cd':
-        await message.answer("Введите ваш Email для ссылки на формулу:")
-        await state.set_state(BookingForm.email)
+        await message.answer("Ваша самая большая задача сейчас?")
+        await state.set_state(BookingForm.main_task)
     else:
-        await message.answer("Ваша главная задача на 3 месяца?")
+        await message.answer("Какую задачу хотите решить за 3 месяца?", reply_markup=pain_kb)
         await state.set_state(BookingForm.main_task)
 
 
 @dp.message(BookingForm.main_task)
 async def proc_task(message: types.Message, state: FSMContext):
     await state.update_data(main_task=message.text)
-    await message.answer("Удобное время для связи?", reply_markup=get_reply_kb(["Утро", "День", "Вечер"]))
-    await state.set_state(BookingForm.time_of_day)
+    data = await state.get_data()
+    sync_unconfirmed(data, "task_done")
+    if data['target'] == 'cd':
+        await message.answer("Укажите ваш Email:")
+        await state.set_state(BookingForm.email)
+    else:
+        await message.answer("Удобное время для связи:", reply_markup=time_kb)
+        await state.set_state(BookingForm.time_of_day)
 
 
 @dp.message(BookingForm.time_of_day)
 async def proc_time(message: types.Message, state: FSMContext):
     await state.update_data(time_of_day=message.text)
     data = await state.get_data()
-    await message.answer(f"Проверьте данные:\nИмя: {data['name']}\nЗадача: {data['main_task']}",
-                         reply_markup=confirm_keyboard)
+    sync_unconfirmed(data, "awaiting_confirm")
+    summary = (
+        f"📋 **Ваши данные:**\n\n👤 Имя: {data['name']}\n🎯 Задача: {data['main_task']}\n🕒 Время: {data['time_of_day']}")
+    await message.answer(summary, reply_markup=confirm_keyboard, parse_mode="Markdown")
 
 
 @dp.message(BookingForm.email)
 async def proc_email(message: types.Message, state: FSMContext):
     await state.update_data(email=message.text)
     data = await state.get_data()
-    await message.answer(f"Проверьте email: {data['email']}", reply_markup=confirm_keyboard)
+    sync_unconfirmed(data, "awaiting_confirm_cd")
+    summary = (
+        f"📋 **Данные кастдева:**\n\n👤 Имя: {data['name']}\n📧 Email: {data['email']}\n🎯 Задача: {data['main_task']}")
+    await message.answer(summary, reply_markup=confirm_keyboard, parse_mode="Markdown")
 
 
 @dp.callback_query(F.data == "confirm_final")
 async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if finalize_to_main(data):
-        target = data.get("target", "w")
-        if target == "cd":
-            await callback.message.edit_text("✅ Ваша ссылка: https://forms.gle/nDYzDLtffxyAcsvS7")
-            admin_id = ADMIN_MUZH_ID
-        else:
-            await callback.message.edit_text("✅ Данные приняты! Свяжемся с вами.")
-            admin_id = ADMIN_MUZH_ID if target in ["m", "cm"] else ADMIN_ZHENA_ID
+    target = data.get("target", "w")
+    admin_to_notify = None
 
-        if admin_id:
-            await bot.send_message(admin_id, f"🚀 Новая заявка [{target}]: {data.get('name')} @{data.get('username')}")
+    if finalize_to_main(data):
+        if target == "cd":
+            await callback.message.edit_text("✅ Ссылка: https://forms.gle/nDYzDLtffxyAcsvS7")
+            admin_to_notify = ADMIN_MUZH_ID
+            text_admin = f"📊 **КАСТДЕВ**\n👤 {data.get('name')}\n📧 {data.get('email')}\n🎯 {data.get('main_task')}\n📱 @{data.get('username')}"
+        else:
+            await callback.message.edit_text("✅ Данные приняты!")
+            admin_to_notify = ADMIN_MUZH_ID if target in ["m", "cm"] else ADMIN_ZHENA_ID
+            text_admin = f"🚀 **ЗАЯВКА**\n👤 {data.get('name')}\n🔥 БОЛЬ: {data.get('main_task')}\n🕒 ВРЕМЯ: {data.get('time_of_day')}\n📱 @{data.get('username')}"
+
+        if admin_to_notify:
+            try:
+                await bot.send_message(admin_to_notify, text_admin, parse_mode="Markdown")
+            except:
+                pass
         await state.clear()
 
 
