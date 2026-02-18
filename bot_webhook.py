@@ -198,7 +198,13 @@ async def cmd_start(message: types.Message, state: FSMContext):
     sync_unconfirmed(start_data, now_str)  # Записываем время в колонку N
 
     if target == "cd":
-        text = "Здравствуйте! Спасибо за участие в кастдеве. В благодарность в конце я пришлю вам ссылку на расчет 'Формулы Результата'.\n\nКак к вам обращаться?"
+        text = "Приветствую!\n\n" \
+        "Благодарю за помощь в моем исследовании темы \n\n"
+        "'Бизнес как продолжение любви' \n\n"
+        "Ваше мнение - важная часть этого проекта."
+        "В конце я пришлю обещанный расчет вашей персональной \n\n"
+        "Формулы Результата\n\n"
+        "Как к вам обращаться?\n\n"
     else:
         text = ("Здравствуйте.\n\n"
         "Рада, что вы здесь. Программа 'Бизнес как продолжение любви'"
@@ -290,12 +296,20 @@ async def proc_time(message: types.Message, state: FSMContext):
 
 
 @dp.message(BookingForm.email)
+@dp.message(BookingForm.email)
 async def proc_email(message: types.Message, state: FSMContext):
     await state.update_data(email=message.text)
     data = await state.get_data()
     sync_unconfirmed(data, "awaiting_confirm_cd")
+
+    # Измененный текст подтверждения для кастдева
     summary = (
-        f"📋 **Данные кастдева:**\n\n👤 Имя: {data['name']}\n📧 Email: {data['email']}\n🎯 Задача: {data['main_task']}")
+        f"📋 **Ваши данные для кастдева:**\n\n"
+        f"👤 Имя: {data['name']}\n"
+        f"📧 Email: {data['email']}\n"
+        f"🎯 Задача: {data['main_task']}\n\n"
+        f"Пожалуйста, подтвердите ваши данные, чтобы получить ссылку на расчет 'Формулы Результата':"
+    )
     await message.answer(summary, reply_markup=confirm_keyboard, parse_mode="Markdown")
 
 
@@ -306,23 +320,38 @@ async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
 
     if finalize_to_main(data):
         if target == "cd":
-            await callback.message.edit_text("✅ Спасибо! Ваша ссылка: https://forms.gle/nDYzDLtffxyAcsvS7")
-            admin_id, label = ADMIN_MUZH_ID, "📊 КАСТДЕВ"
+            # Финальное сообщение пользователю после кастдева
+            await callback.message.edit_text(
+                "✅ Данные подтверждены! Ваша ссылка на 'Формулу Результата': https://forms.gle/nDYzDLtffxyAcsvS7")
+
+            # ОТПРАВКА ЖЕНЕ (ADMIN_ZHENA_ID)
+            admin_id = ADMIN_ZHENA_ID
+            label = "📊 НОВЫЙ КАСТДЕВ (Заполнено)"
             details = f"📧 Email: {data.get('email')}\n🎯 Задача: {data.get('main_task')}"
         else:
-            await callback.message.edit_text("✅ Данные приняты! Мы свяжемся с вами.")
+            # Обычная программа
+            await callback.message.edit_text("✅ Данные приняты! Мы свяжемся с вами в ближайшее время.")
+
+            # Распределение: муж или жена
             admin_id = ADMIN_MUZH_ID if target in ["m", "cm"] else ADMIN_ZHENA_ID
             label = "🚀 ЗАЯВКА НА ПРОГРАММУ"
             details = f"🔥 БОЛЬ: {data.get('main_task')}\n🕒 ВРЕМЯ: {data.get('time_of_day')}"
 
+        # Сама отправка сообщения админу
         if admin_id:
-            admin_text = f"{label}\n\n👤 Имя: {data.get('name')}\n{details}\n📱 Контакт: @{data.get('username')}"
+            admin_text = (
+                f"{label}\n\n"
+                f"👤 Имя: {data.get('name')}\n"
+                f"{details}\n"
+                f"📱 Контакт: @{data.get('username')}\n"
+                f"🔗 Источник: {data.get('source')}_{data.get('campaign')}"
+            )
             try:
                 await bot.send_message(admin_id, admin_text)
-            except:
-                pass
-        await state.clear()
+            except Exception as e:
+                logging.error(f"Ошибка отправки админу: {e}")
 
+        await state.clear()
 
 # ================== SERVER ==================
 async def handle_webhook(request):
