@@ -134,10 +134,15 @@ async def cmd_start(message: types.Message, state: FSMContext):
     if target == "cd":
         msg = ("Приветствую!\n\nБлагодарю за помощь в моем исследовании темы \n\n"
                "'Бизнес как продолжение любви'.\n\n Ваше мнение - важная часть этого проекта. \n\n"
-               "В конце я пришлю обещанный расчет вашей \n\n персональной 'Формулы Результата'. \n\n"
+               "В конце я пришлю обещанный расчет вашей персональной 'Формулы Результата'. \n\n"
                "Как к вам обращаться?")
     else:
-        msg = "Здравствуйте! Программа 'Бизнес как продолжение любви' — это путь к росту через гармонию.\n\nКак к вам обращаться?"
+        msg = "Здравствуйте.\n\n"
+        "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' "
+        "- это про то, как быть сильной, не ослабляя партнёра. "
+        "И как создать дело, которое укрепляет отношения, а не разрушает их.\n\n"
+        "Диагностика - это первый шаг к тому, чтобы увидеть свою жизнь как систему.\n\n"
+        "Как к вам можно обращаться?"
 
     await message.answer(msg, reply_markup=ReplyKeyboardRemove())
     await state.set_state(BookingForm.name)
@@ -187,7 +192,7 @@ async def proc_partner(message: types.Message, state: FSMContext):
     await state.update_data(partner=message.text)
     data = await state.get_data()
     sync_unconfirmed(data, "partner_done")
-    await message.answer("Ваша главная задача сейчас?")
+    await message.answer("Ваша главная задача сейчас?(Напишите кратко)")
     await state.set_state(BookingForm.main_task)
 
 
@@ -196,7 +201,7 @@ async def proc_task(message: types.Message, state: FSMContext):
     await state.update_data(main_task=message.text)
     data = await state.get_data()
     if data['target'] == 'cd':
-        await message.answer("Укажите ваш Email для отправки результата:")
+        await message.answer("Укажите ваш Email для связи:")
         await state.set_state(BookingForm.email)
     else:
         await message.answer("Удобное время для звонка?", reply_markup=get_reply_kb(["Утро", "День", "Вечер"]))
@@ -231,7 +236,7 @@ async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
         if target == "cd":
             label = f"{target}_{data.get('source')}_{data.get('campaign')}"
             smart_link = f"{FORM_URL}?usp=pp_url&entry.{ENTRY_SOURCE_ID}={label}"
-            await callback.message.edit_text(f"✅ Готово! Ваша ссылка на расчет:\n{smart_link}",
+            await callback.message.edit_text(f"✅ Спасибо! Ваша ссылка для расчета:\n{smart_link}",
                                              disable_web_page_preview=True)
             admin_id, admin_label = ADMIN_ZHENA_ID, "📊 КАСТДЕВ ЗАВЕРШЕН"
         else:
