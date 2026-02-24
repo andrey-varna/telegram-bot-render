@@ -11,7 +11,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from notion_client import Client  # Добавили клиент Notion
+from notion_client import Client
+import traceback
 
 # ================== КОНФИГУРАЦИЯ ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -115,12 +116,23 @@ def sync_unconfirmed(data: dict, status: str):
         logging.error(f"Sheet error: {e}")
 
 
+import traceback
+from datetime import datetime
+
+
 def finalize_to_main(data: dict):
+    # Эта строка говорит Python использовать те самые таблицы, что ты открыл в начале файла
+    global main_sheet, unconfirmed_sheet, notion, NOTION_DATABASE_ID
+
     try:
-        target, tid = data.get("target", "w"), str(data.get("telegram_id"))
+        # 1. ЛОГИ: Поймем, что пришло с лендинга (почему нет "выбора проблем")
+        print(f"DEBUG: Входящие данные: {data}")
+
+        target = data.get("target", "w")
+        tid = str(data.get("telegram_id", ""))
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Формируем строку для Google Таблиц
+        # Собираем строку для записи
         row_main = [
             tid, data.get("username", ""), target, data.get("source", ""), data.get("campaign", ""),
             data.get("name", ""), data.get("role", ""), data.get("business_stage", ""), data.get("partner", ""),
@@ -129,33 +141,39 @@ def finalize_to_main(data: dict):
             data.get("time_of_day", ""), data.get("email", ""), current_time
         ]
 
-        # 1. Сначала пишем в Google Таблицы
-        main_sheet.append_row(row_main)
+        # 2. ЗАПИСЬ В GOOGLE SHEETS
+        # append_row добавляет В КОНЕЦ. Если затирает — проверим логи!
+        main_sheet.append_row(row_main, value_input_option="USER_ENTERED")
+        print("DEBUG: Google Sheets (main_sheet) - OK")
 
-        # 2.
-        notion.pages.create(
-            parent={"database_id": NOTION_DATABASE_ID},
-            properties={
-                "Name": {"title": [{"text": {"content": data.get("name", "Без имени")}}]},
-                "Telegram ID": {"rich_text": [{"text": {"content": tid}}]},
-                "Role": {"select": {"name": data.get("role", "Other")}} if data.get("role") else {
-                    "rich_text": [{"text": {"content": "N/A"}}]},
-                "Email": {"email": data.get("email", "")} if data.get("email") else None,
-                "Date": {"rich_text": [{"text": {"content": current_time}}]}
-            }
-        )
+        # 3. ЗАПИСЬ В NOTION
+        try:
+            notion.pages.create(
+                parent={"database_id": NOTION_DATABASE_ID},
+                properties={
+                    "Name": {"title": [{"text": {"content": data.get("name", "Без имени")}}]},
+                    "TG_ID": {"rich_text": [{"text": {"content": tid}}]},
+                    "Role": {"rich_text": [{"text": {"content": data.get("role", "N/A")}}]},
+                    "Target": {"select": {"name": target if target else "w"}},
+                    "Email": {"email": data.get("email", "")} if data.get("email") else None
+                }
+            )
+            print("DEBUG: Notion - OK")
+        except Exception as n_err:
+            print(f"!!! ОШИБКА NOTION: {n_err}")
 
-        # 3. И только теперь удаляем из временной таблицы
+        # 4. УДАЛЕНИЕ ИЗ ВРЕМЕННОЙ ТАБЛИЦЫ
         cell = unconfirmed_sheet.find(tid, in_column=1)
         if cell:
             unconfirmed_sheet.delete_rows(cell.row)
+            print(f"DEBUG: Удалена строка {cell.row} из unconfirmed_sheet")
 
         return True
 
     except Exception as e:
-        print(f"Ошибка в finalize_to_main: {e}")  # Обязательно выводим ошибку в логи Render
+        print("!!! КРИТИЧЕСКАЯ ОШИБКА В FINALIZE_TO_MAIN:")
+        traceback.print_exc()
         return False
-
 # ================== ХЕНДЛЕРЫ ==================
 
 @dp.message(Command("start"))
