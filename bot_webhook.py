@@ -118,20 +118,43 @@ def sync_unconfirmed(data: dict, status: str):
 def finalize_to_main(data: dict):
     try:
         target, tid = data.get("target", "w"), str(data.get("telegram_id"))
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Формируем строку для Google Таблиц
         row_main = [
             tid, data.get("username", ""), target, data.get("source", ""), data.get("campaign", ""),
             data.get("name", ""), data.get("role", ""), data.get("business_stage", ""), data.get("partner", ""),
             ("" if target == "cd" else data.get("main_task", "")),
             (data.get("main_task", "") if target == "cd" else ""),
-            data.get("time_of_day", ""), data.get("email", ""), datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            data.get("time_of_day", ""), data.get("email", ""), current_time
         ]
-        main_sheet.append_row(row_main)
-        cell = unconfirmed_sheet.find(tid, in_column=1)
-        if cell: unconfirmed_sheet.delete_rows(cell.row)
-        return True
-    except Exception as e:
-        return False
 
+        # 1. Сначала пишем в Google Таблицы
+        main_sheet.append_row(row_main)
+
+        # 2.
+        notion.pages.create(
+            parent={"database_id": NOTION_DATABASE_ID},
+            properties={
+                "Name": {"title": [{"text": {"content": data.get("name", "Без имени")}}]},
+                "Telegram ID": {"rich_text": [{"text": {"content": tid}}]},
+                "Role": {"select": {"name": data.get("role", "Other")}} if data.get("role") else {
+                    "rich_text": [{"text": {"content": "N/A"}}]},
+                "Email": {"email": data.get("email", "")} if data.get("email") else None,
+                "Date": {"rich_text": [{"text": {"content": current_time}}]}
+            }
+        )
+
+        # 3. И только теперь удаляем из временной таблицы
+        cell = unconfirmed_sheet.find(tid, in_column=1)
+        if cell:
+            unconfirmed_sheet.delete_rows(cell.row)
+
+        return True
+
+    except Exception as e:
+        print(f"Ошибка в finalize_to_main: {e}")  # Обязательно выводим ошибку в логи Render
+        return False
 
 # ================== ХЕНДЛЕРЫ ==================
 
