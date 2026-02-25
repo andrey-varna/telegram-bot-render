@@ -148,15 +148,24 @@ def finalize_to_main(data: dict):
 
         # 3. ЗАПИСЬ В NOTION
         try:
+            notion_properties = {
+                "Name": {"title": [{"text": {"content": data.get("name", "Без имени")}}]},
+                "Telegram ID": {"rich_text": [{"text": {"content": tid}}]},
+                "Email": {"email": data.get("email")} if data.get("email") else None,
+                # Поля Select требуют точного совпадения или наличия опции в Notion
+                "Relationship Status": {"select": {"name": "Confirmed"}},
+                "Role in Business": {"select": {"name": data.get("role") if data.get("role") else "Other"}},
+                "Business Stage": {
+                    "select": {"name": data.get("business_stage") if data.get("business_stage") else "None"}},
+                "Source": {"select": {"name": data.get("source") if data.get("source") else "direct"}},
+                "Partner": {"select": {"name": data.get("partner") if data.get("partner") else "None"}}
+            }
+
+            notion_properties = {k: v for k, v in notion_properties.items() if v is not None}
+
             notion.pages.create(
                 parent={"database_id": NOTION_DATABASE_ID},
-                properties={
-                    "Name": {"title": [{"text": {"content": data.get("name", "Без имени")}}]},
-                    "TG_ID": {"rich_text": [{"text": {"content": tid}}]},
-                    "Role": {"rich_text": [{"text": {"content": data.get("role", "N/A")}}]},
-                    "Target": {"select": {"name": target if target else "w"}},
-                    "Email": {"email": data.get("email", "")} if data.get("email") else None
-                }
+                properties=notion_properties
             )
             print("DEBUG: Notion - OK")
         except Exception as n_err:
