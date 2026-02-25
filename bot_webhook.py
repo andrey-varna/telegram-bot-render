@@ -251,12 +251,32 @@ async def proc_stage(message: types.Message, state: FSMContext):
     await message.answer("Есть партнер в бизнесе?", reply_markup=get_reply_kb(["Да", "Нет", "Хочу"]))
     await state.set_state(BookingForm.partner)
 
+
 @dp.message(BookingForm.partner)
 async def proc_partner(message: types.Message, state: FSMContext):
     await state.update_data(partner=message.text)
     data = await state.get_data()
+
+    # Синхронизируем временные данные
     sync_unconfirmed(data, "partner_done")
-    await message.answer("Ваша главная задача сейчас? (Напишите кратко)")
+
+    # Проверяем цель (target)
+    if data.get('target') == 'cd':
+        # Для КД оставляем открытый вопрос без кнопок
+        await message.answer(
+            "Ваша главная задача сейчас? (Напишите кратко)",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
+    else:
+        # Для лендинга/программы даем кнопки с вариантами
+        task_keyboard = get_reply_kb([
+            "Перестать всё контролировать и тащить на себе",
+            "Вернуть страсть и близость, не теряя доход",
+            "Распределить роли, чтобы не конфликтовать",
+            "Выйти на новый уровень дохода без выгорания"
+        ])
+        await message.answer("Выберите вашу главную задачу сейчас:", reply_markup=task_keyboard)
+
     await state.set_state(BookingForm.main_task)
 
 @dp.message(BookingForm.main_task)
