@@ -143,7 +143,19 @@ def finalize_to_main(data: dict):
 
         # 2. ЗАПИСЬ В GOOGLE SHEETS
         # append_row добавляет В КОНЕЦ. Если затирает — проверим логи!
-        main_sheet.append_row(row_main, value_input_option="USER_ENTERED")
+        # main_sheet.append_row(row_main, value_input_option="USER_ENTERED")
+        try:
+            # Получаем все значения первого столбца, чтобы найти реальный конец
+            col_values = main_sheet.col_values(1)
+            next_row = len(col_values) + 1
+
+            # Записываем данные в конкретную строку
+            main_sheet.insert_row(row_main, next_row, value_input_option="USER_ENTERED")
+            print(f"DEBUG: Google Sheets - OK (Записано в строку {next_row})")
+        except Exception as sheet_err:
+            print(f"!!! ОШИБКА GOOGLE SHEETS: {sheet_err}")
+            # Если insert_row не сработал, пробуем обычный append как запасной вариант
+            main_sheet.append_row(row_main, value_input_option="USER_ENTERED")
         print("DEBUG: Google Sheets (main_sheet) - OK")
 
         # 3. ЗАПИСЬ В NOTION
