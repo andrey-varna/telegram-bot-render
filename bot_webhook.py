@@ -1,7 +1,6 @@
 import os
 import json
 import logging
-from datetime import datetime
 from aiohttp import web
 import gspread
 from google.oauth2.service_account import Credentials
@@ -13,6 +12,7 @@ from aiogram.types import Update, InlineKeyboardButton, InlineKeyboardMarkup, Re
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from notion_client import Client
 import traceback
+from datetime import datetime, timedelta
 
 # ================== КОНФИГУРАЦИЯ ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -48,8 +48,9 @@ notion = Client(auth=NOTION_TOKEN)
 # Бот
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-scheduler = AsyncIOScheduler()
+scheduler = AsyncIOScheduler(timezone="bulgaria/sofia") # Укажи свой часовой пояс
 
+# 2. Добавляем задачу (проверка брошенных корзин каждые 10 минут)
 
 class BookingForm(StatesGroup):
     target = State()
@@ -114,10 +115,6 @@ def sync_unconfirmed(data: dict, status: str):
             unconfirmed_sheet.append_row(row)
     except Exception as e:
         logging.error(f"Sheet error: {e}")
-
-
-import traceback
-from datetime import datetime
 
 
 def finalize_to_main(data: dict):
@@ -364,11 +361,85 @@ async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
 
     await state.clear()
 
+# Дожатие 3 касания
+async def check_abandoned_carts():
+    try:
+        records = unconfirmed_sheet.get_all_records()
+        if not records:
+            return
+
+        now = datetime.now()
+        header = unconfirmed_sheet.row_values(1)
+
+        # Ищем колонку для статуса, если нет — используем 14-ю
+        try:
+            status_col_idx = header.index('status') + 1
+        except ValueError:
+            status_col_idx = 14
+
+        for i, row in enumerate(records):
+            tid = row.get('telegram_id')
+            if not tid: continue
+
+            try:
+                created_val = row.get('created_at')
+                if not created_val:
+                    continue
+
+                start_dt = datetime.strptime(str(created_val), "%d.%m.%Y %H:%M:%S")
+            except Exception as e:
+                print(f"DEBUG: Ошибка даты на строке {i + 2}: {e} (значение: {row.get('created_at')})")
+                continue
+
+            diff = now - start_dt
+            target = str(row.get('target', '')).lower()
+            is_cd = "cd" in target
+            current_status = str(row.get('status', ''))
+            row_idx = i + 2
+
+            # --- 1 КАСАНИЕ (15 минут) ---
+            if timedelta(minutes=1) <= diff < timedelta(hours=1) and "notified_n1" not in current_status:
+                msg = ("🎁 Почти готово! Ответьте на пару вопросов и заберите подарок." if is_cd
+                       else "Вы начали регистрацию на программу, но не завершили её. Всё ли в порядке?")
+                await send_and_update_status(tid, msg, row_idx, status_col_idx, "notified_n1")
+
+            # --- 2 КАСАНИЕ (3 дня) ---
+            #elif timedelta(days=3) <= diff < timedelta(days=4) and "notified_n2" not in current_status:
+            elif timedelta(minutes=2) <= diff < timedelta(hours=1) and "notified_n1" not in current_status:
+                msg = ("Ваша 'Формула Результата' всё еще ждет вас. Завершите опрос, чтобы получить её." if is_cd
+                       else "Мы всё еще сохраняем ваше место на программу. Регистрация актуальна для вас?")
+                await send_and_update_status(tid, msg, row_idx, status_col_idx, "notified_n2")
+
+            # --- 3 КАСАНИЕ (7 дней) — НОВОЕ ---
+            #elif timedelta(days=7) <= diff < timedelta(days=8) and "notified_n3" not in current_status:
+            elif timedelta(minutes=3) <= diff < timedelta(hours=1) and "notified_n1" not in current_status:
+                msg = (
+                    "Я всё еще на связи! Если актуально получить подарок и разобрать вашу ситуацию — анкету можно заполнить в любое время." if is_cd
+                    else "Хотел напомнить, что вы можете завершить регистрацию в любое время. Если возникли вопросы или сомнения — просто напишите мне.")
+                await send_and_update_status(tid, msg, row_idx, status_col_idx, "notified_n3")
+
+    except Exception as e:
+        print(f"!!! ОШИБКА SCHEDULER: {e}")
+
+# Добавляем задачу (проверка брошенных корзин каждые 10 минут)
+scheduler.add_job(check_abandoned_carts,
+    "interval", minutes=10, id="check_abandoned_carts_job",
+    replace_existing=True)
+
+# Вспомогательная функция, чтобы не дублировать код
+async def send_and_update_status(tid, msg, row_idx, col_idx, status_code):
+    try:
+        await bot.send_message(tid, msg)
+        unconfirmed_sheet.update_cell(row_idx, col_idx, status_code)
+        print(f"DEBUG: {status_code} отправлено {tid}")
+    except Exception as e:
+        print(f"DEBUG: Ошибка отправки {status_code} для {tid}: {e}")
 # ================== ЗАПУСК ==================
 async def handle_webhook(request):
     body = await request.json()
     await dp.feed_update(bot, Update.model_validate(body))
     return web.Response(text="ok")
+
 
 async def on_startup(app):
     await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
