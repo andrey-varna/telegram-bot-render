@@ -13,7 +13,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from notion_client import Client
 import traceback
 from datetime import datetime, timedelta
-
+import pytz
 # ================== КОНФИГУРАЦИЯ ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SPREADSHEET_KEY = os.getenv("MAIN_SHEET_KEY")
@@ -363,6 +363,8 @@ async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
 
 # Дожатие 3 касания
 async def check_abandoned_carts():
+    tz = pytz.timezone('Europe/Sofia')
+    now = datetime.now(tz).replace(tzinfo=None)
     try:
         records = unconfirmed_sheet.get_all_records()
         if not records:
@@ -405,14 +407,14 @@ async def check_abandoned_carts():
 
             # --- 2 КАСАНИЕ (3 дня) ---
             #elif timedelta(days=3) <= diff < timedelta(days=4) and "notified_n2" not in current_status:
-            elif timedelta(minutes=2) <= diff < timedelta(hours=1) and "notified_n1" not in current_status:
+            elif timedelta(minutes=2) <= diff < timedelta(minutes=5) and "notified_n1" not in current_status:
                 msg = ("Ваша 'Формула Результата' всё еще ждет вас. Завершите опрос, чтобы получить её." if is_cd
                        else "Мы всё еще сохраняем ваше место на программу. Регистрация актуальна для вас?")
                 await send_and_update_status(tid, msg, row_idx, status_col_idx, "notified_n2")
 
             # --- 3 КАСАНИЕ (7 дней) — НОВОЕ ---
             #elif timedelta(days=7) <= diff < timedelta(days=8) and "notified_n3" not in current_status:
-            elif timedelta(minutes=3) <= diff < timedelta(hours=1) and "notified_n1" not in current_status:
+            elif timedelta(minutes=3) <= diff < timedelta(minutes=5) and "notified_n1" not in current_status:
                 msg = (
                     "Я всё еще на связи! Если актуально получить подарок и разобрать вашу ситуацию — анкету можно заполнить в любое время." if is_cd
                     else "Хотел напомнить, что вы можете завершить регистрацию в любое время. Если возникли вопросы или сомнения — просто напишите мне.")
