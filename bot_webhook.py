@@ -48,7 +48,7 @@ notion = Client(auth=NOTION_TOKEN)
 # Бот
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-scheduler = AsyncIOScheduler(timezone="bulgaria/sofia") # Укажи свой часовой пояс
+scheduler = AsyncIOScheduler(timezone="Europe/Sofia") # Укажи свой часовой пояс
 
 # 2. Добавляем задачу (проверка брошенных корзин каждые 10 минут)
 
