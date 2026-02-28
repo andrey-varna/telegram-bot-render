@@ -152,65 +152,51 @@ def send_to_notion(data: dict):
 # ================== ДОЖАТИЕ (SCHEDULER) ==================
 
 async def check_abandoned_carts():
-    logging.info(">>> Запуск проверки брошенных корзин...")
+    logging.info(">>> [SCHEDULER] Старт цикла...")
     try:
         records = unconfirmed_sheet.get_all_records()
+        logging.info(f">>> [SCHEDULER] Найдено строк в таблице: {len(records)}")
+
         if not records:
             return
 
-        # Важно: используем время в Софии для сравнения
+        # Получаем время в Софии
         tz = pytz.timezone('Europe/Sofia')
         now = datetime.now(tz).replace(tzinfo=None)
-
-        header = unconfirmed_sheet.row_values(1)
-        try:
-            status_col_idx = header.index('status') + 1
-        except ValueError:
-            status_col_idx = 14
 
         for i, row in enumerate(records):
             tid = row.get('telegram_id')
             created_val = row.get('created_at')
-            if not tid or not created_val: continue
+            current_status = str(row.get('status', ''))
+
+            # ВАЖНО: Логируем каждую строку, которую бот видит
+            logging.info(f"--- Строка {i + 2}: ID={tid}, Дата={created_val}, Статус='{current_status}' ---")
+
+            if not tid or not created_val:
+                logging.info(f"Пропуск: нет данных в ID или Дате")
+                continue
 
             try:
-                # Парсим дату в формате 25.02.2026 20:37:30
                 start_dt = datetime.strptime(str(created_val), "%d.%m.%Y %H:%M:%S")
-            except:
+            except Exception as e:
+                logging.error(f"Ошибка парсинга даты: {e}")
                 continue
 
             diff = now - start_dt
-            logging.info(f"DEBUG: Строка {i + 2}. Таблица: {start_dt}, Сейчас: {now}")
-            logging.info(f"DEBUG: Разница (минуты): {diff.total_seconds() / 60:.2f}")
-            target = str(row.get('target', '')).lower()
-            is_cd = "cd" in target
-            current_status = str(row.get('status', ''))
-            row_idx = i + 2
+            minutes_diff = diff.total_seconds() / 60
+            logging.info(f"МИНУТ ПРОШЛО: {minutes_diff:.2f}")
 
-            # ТВОИ ТЕСТОВЫЕ ИНТЕРВАЛЫ (1, 2, 3 минуты)
-            # 1 Касание
-            if timedelta(minutes=1) <= diff < timedelta(minutes=2) and "notified_n1" not in current_status:
-                msg = ("🎁 Почти готово! Ответьте на пару вопросов и заберите подарок." if is_cd
-                       else "Вы начали регистрацию на программу, но не завершили её. Всё ли в порядке?")
-                await send_and_update_status(tid, msg, row_idx, status_col_idx, "notified_n1")
-
-            # 2 Касание
-            elif timedelta(minutes=2) <= diff < timedelta(minutes=3) and "notified_n2" not in current_status:
-                msg = ("Ваша 'Формула Результата' всё еще ждет вас. Завершите опрос, чтобы получить её." if is_cd
-                       else "Мы всё еще сохраняем ваше место на программу. Регистрация актуальна для вас?")
-                await send_and_update_status(tid, msg, row_idx, status_col_idx, "notified_n2")
-
-            # 3 Касание
-            elif timedelta(minutes=3) <= diff < timedelta(minutes=10) and "notified_n3" not in current_status:
-                msg = (
-                    "Я всё еще на связи! Если актуально получить подарок — анкету можно заполнить в любое время." if is_cd
-                    else "Хотел напомнить, что вы можете завершить регистрацию в любое время.")
-                await send_and_update_status(tid, msg, row_idx, status_col_idx, "notified_n3")
+            # ТЕСТОВОЕ УСЛОВИЕ (от 1 до 60 минут)
+            if 1 <= minutes_diff < 60 and "notified_n1" not in current_status:
+                logging.info(f"!!! УСЛОВИЕ ВЫПОЛНЕНО. Отправляю сообщение {tid}...")
+                await send_and_update_status(tid, "Вы начали регистрацию, но не завершили её. Всё ли в порядке?", i + 2,
+                                             15, "notified_n1")
+            else:
+                logging.info(f"Условие не подошло: либо время < 1 мин, либо статус уже 'notified_n1'")
 
     except Exception as e:
-        logging.error(f"!!! ОШИБКА SCHEDULER: {e}")
-
-
+        logging.error(f"!!! ОШИБКА В ЦИКЛЕ: {e}")
+        traceback.print_exc()
 # Регистрируем задачу в планировщике
 scheduler.add_job(check_abandoned_carts, "interval", minutes=1, id="check_job", replace_existing=True)
 
