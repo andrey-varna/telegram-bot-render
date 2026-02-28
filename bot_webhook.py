@@ -85,22 +85,30 @@ def sync_unconfirmed(data: dict, status: str):
     try:
         tid = str(data.get("telegram_id"))
         target = data.get("target", "w")
-        # Формируем строку (14 колонок)
+
+        # Берем дату создания из данных, если её нет — создаем новую
+        created_at = data.get("created_at")
+        if not created_at:
+            created_at = datetime.now(pytz.timezone('Europe/Sofia')).strftime("%d.%m.%Y %H:%M:%S")
+
         row = [
             tid, data.get("username", ""), target, data.get("source", ""), data.get("campaign", ""),
             data.get("name", ""), data.get("role", ""), data.get("business_stage", ""), data.get("partner", ""),
             ("" if target == "cd" else data.get("main_task", "")),
             (data.get("main_task", "") if target == "cd" else ""),
-            data.get("time_of_day", ""), data.get("email", ""), status
+            data.get("time_of_day", ""), data.get("email", ""),
+            created_at,  # 14-я колонка: ВСЕГДА ДАТА
+            status  # 15-я колонка: СТАТУС (role_done и т.д.)
         ]
+
         cells = unconfirmed_sheet.findall(tid, in_column=1)
         if cells:
-            unconfirmed_sheet.update(f"A{cells[-1].row}:N{cells[-1].row}", [row])
+            # Обновляем диапазон A:O (15 колонок)
+            unconfirmed_sheet.update(f"A{cells[-1].row}:O{cells[-1].row}", [row])
         else:
             unconfirmed_sheet.append_row(row)
     except Exception as e:
-        logging.error(f"Sheet error in sync_unconfirmed: {e}")
-
+        logging.error(f"Sheet error: {e}")
 
 def finalize_to_main(data: dict):
     try:
