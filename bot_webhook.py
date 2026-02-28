@@ -1,19 +1,20 @@
 import os
 import json
 import logging
-from aiohttp import web
-import gspread
-from google.oauth2.service_account import Credentials
+import traceback
+from datetime import datetime, timedelta
+import pytz
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove, Update
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiohttp import web
+import gspread
+from google.oauth2.service_account import Credentials
 from notion_client import Client
-import traceback
-from datetime import datetime, timedelta
-import pytz
+
 # ================== КОНФИГУРАЦИЯ ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SPREADSHEET_KEY = os.getenv("MAIN_SHEET_KEY")
@@ -22,18 +23,15 @@ ADMIN_MUZH_ID = int(os.getenv("ADMIN_MUZH_ID", "0"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", "10000"))
 
-# ДАННЫЕ NOTION
-NOTION_TOKEN = os.getenv("NOTION_TOKEN")  # secret_...
-NOTION_DATABASE_ID = "308a163edd1580caa995ecbefbfe7ee4"  # Твоя база People
+NOTION_TOKEN = os.getenv("NOTION_TOKEN")
+NOTION_DATABASE_ID = "308a163edd1580caa995ecbefbfe7ee4"
 
-# ТВОИ ДАННЫЕ ГУГЛ ФОРМЫ
 FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSfWRmYZFeaCvF7uHGTmdehQFV5x2ZLK1GW0Twgi-XbWG0m0aw/viewform"
 ENTRY_SOURCE_ID = "2108732275"
 
 logging.basicConfig(level=logging.INFO)
 
 # ================== ИНИЦИАЛИЗАЦИЯ API ==================
-# Google
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 credentials = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
@@ -42,15 +40,11 @@ spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
 main_sheet = spreadsheet.worksheet("leads_main")
 unconfirmed_sheet = spreadsheet.worksheet("leads_unconfirmed")
 
-# Notion
 notion = Client(auth=NOTION_TOKEN)
-
-# Бот
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-scheduler = AsyncIOScheduler(timezone="Europe/Sofia") # Укажи свой часовой пояс
+scheduler = AsyncIOScheduler(timezone="Europe/Sofia")
 
-# 2. Добавляем задачу (проверка брошенных корзин каждые 10 минут)
 
 class BookingForm(StatesGroup):
     target = State()
@@ -75,32 +69,23 @@ confirm_keyboard = InlineKeyboardMarkup(
     inline_keyboard=[[InlineKeyboardButton(text="📅 Подтвердить данные", callback_data="confirm_final")]])
 
 
-# ================== ИНТЕГРАЦИЯ NOTION ==================
-def send_to_notion(data: dict):
+# ================== ТЕХНИЧЕСКИЕ ФУНКЦИИ ==================
+
+async def send_and_update_status(tid, msg, row_idx, col_idx, status_code):
+    """Отправляет сообщение и ставит метку в Гугл Таблицу"""
     try:
-        username = data.get("username", "скрыт")
-        notion.pages.create(
-            parent={"database_id": NOTION_DATABASE_ID},
-            properties={
-                "Name": {"title": [{"text": {"content": data.get("name", "N/A")}}]},
-                "Telegram": {"rich_text": [{"text": {"content": f"@{username}"}}]},
-                "Role": {"rich_text": [{"text": {"content": data.get("role", "N/A")}}]},
-                "Task": {"rich_text": [{"text": {"content": data.get("main_task", "N/A")}}]},
-                "Status": {"status": {"name": "New Lead"}}
-            }
-        )
-        return True
+        await bot.send_message(tid, msg)
+        unconfirmed_sheet.update_cell(row_idx, col_idx, status_code)
+        logging.info(f"DEBUG: {status_code} отправлено {tid}")
     except Exception as e:
-        logging.error(f"Notion Error: {e}")
-        return False
+        logging.error(f"DEBUG: Ошибка отправки {status_code} для {tid}: {e}")
 
-
-# ================== ТЕХНИЧЕСКИЕ ФУНКЦИИ (ТАБЛИЦЫ) ==================
 
 def sync_unconfirmed(data: dict, status: str):
     try:
         tid = str(data.get("telegram_id"))
         target = data.get("target", "w")
+        # Формируем строку (14 колонок)
         row = [
             tid, data.get("username", ""), target, data.get("source", ""), data.get("campaign", ""),
             data.get("name", ""), data.get("role", ""), data.get("business_stage", ""), data.get("partner", ""),
@@ -114,22 +99,15 @@ def sync_unconfirmed(data: dict, status: str):
         else:
             unconfirmed_sheet.append_row(row)
     except Exception as e:
-        logging.error(f"Sheet error: {e}")
+        logging.error(f"Sheet error in sync_unconfirmed: {e}")
 
 
 def finalize_to_main(data: dict):
-    # Эта строка говорит Python использовать те самые таблицы, что ты открыл в начале файла
-    global main_sheet, unconfirmed_sheet, notion, NOTION_DATABASE_ID
-
     try:
-        # 1. ЛОГИ: Поймем, что пришло с лендинга (почему нет "выбора проблем")
-        print(f"DEBUG: Входящие данные: {data}")
-
         target = data.get("target", "w")
         tid = str(data.get("telegram_id", ""))
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_time = datetime.now(pytz.timezone('Europe/Sofia')).strftime("%d.%m.%Y %H:%M:%S")
 
-        # Собираем строку для записи
         row_main = [
             tid, data.get("username", ""), target, data.get("source", ""), data.get("campaign", ""),
             data.get("name", ""), data.get("role", ""), data.get("business_stage", ""), data.get("partner", ""),
@@ -138,99 +116,167 @@ def finalize_to_main(data: dict):
             data.get("time_of_day", ""), data.get("email", ""), current_time
         ]
 
-        # 2. ЗАПИСЬ В GOOGLE SHEETS
-        # append_row добавляет В КОНЕЦ. Если затирает — проверим логи!
-        # main_sheet.append_row(row_main, value_input_option="USER_ENTERED")
-        try:
-            # Получаем все значения первого столбца, чтобы найти реальный конец
-            col_values = main_sheet.col_values(1)
-            next_row = len(col_values) + 1
+        # Запись в Google Sheets
+        col_values = main_sheet.col_values(1)
+        next_row = len(col_values) + 1
+        main_sheet.insert_row(row_main, next_row, value_input_option="USER_ENTERED")
 
-            # Записываем данные в конкретную строку
-            main_sheet.insert_row(row_main, next_row, value_input_option="USER_ENTERED")
-            print(f"DEBUG: Google Sheets - OK (Записано в строку {next_row})")
-        except Exception as sheet_err:
-            print(f"!!! ОШИБКА GOOGLE SHEETS: {sheet_err}")
-            # Если insert_row не сработал, пробуем обычный append как запасной вариант
-            main_sheet.append_row(row_main, value_input_option="USER_ENTERED")
-        print("DEBUG: Google Sheets (main_sheet) - OK")
-
-        # 3. ЗАПИСЬ В NOTION
-        try:
-            notion_properties = {
-                "Name": {"title": [{"text": {"content": data.get("name", "Без имени")}}]},
-                "Telegram ID": {"rich_text": [{"text": {"content": tid}}]},
-                "Email": {"email": data.get("email")} if data.get("email") else None,
-                # Поля Select требуют точного совпадения или наличия опции в Notion
-                "Relationship Status": {"select": {"name": "Confirmed"}},
-                "Role in Business": {"select": {"name": data.get("role") if data.get("role") else "Other"}},
-                "Business Stage": {
-                    "select": {"name": data.get("business_stage") if data.get("business_stage") else "None"}},
-                "Source": {"select": {"name": data.get("source") if data.get("source") else "direct"}},
-                "Partner": {"select": {"name": data.get("partner") if data.get("partner") else "None"}}
-            }
-
-            notion_properties = {k: v for k, v in notion_properties.items() if v is not None}
-
-            notion.pages.create(
-                parent={"database_id": NOTION_DATABASE_ID},
-                properties=notion_properties
-            )
-            print("DEBUG: Notion - OK")
-        except Exception as n_err:
-            print(f"!!! ОШИБКА NOTION: {n_err}")
-
-        # 4. УДАЛЕНИЕ ИЗ ВРЕМЕННОЙ ТАБЛИЦЫ
+        # Удаление из временной
         cell = unconfirmed_sheet.find(tid, in_column=1)
         if cell:
             unconfirmed_sheet.delete_rows(cell.row)
-            print(f"DEBUG: Удалена строка {cell.row} из unconfirmed_sheet")
-
         return True
-
-    except Exception as e:
-        print("!!! КРИТИЧЕСКАЯ ОШИБКА В FINALIZE_TO_MAIN:")
+    except Exception:
         traceback.print_exc()
         return False
+
+
+def send_to_notion(data: dict):
+    try:
+        username = data.get("username", "скрыт")
+        notion.pages.create(
+            parent={"database_id": NOTION_DATABASE_ID},
+            properties={
+                "Name": {"title": [{"text": {"content": data.get("name", "N/A")}}]},
+                "Telegram": {"rich_text": [{"text": {"content": f"@{username}"}}]},
+                "Role": {"rich_text": [{"text": {"content": data.get("role", "N/A")}}]},
+                "Status": {"status": {"name": "New Lead"}}
+            }
+        )
+        return True
+    except Exception as e:
+        logging.error(f"Notion Error: {e}")
+        return False
+
+
+# ================== ДОЖАТИЕ (SCHEDULER) ==================
+
+async def check_abandoned_carts():
+    logging.info(">>> Запуск проверки брошенных корзин...")
+    try:
+        records = unconfirmed_sheet.get_all_records()
+        if not records:
+            return
+
+        # Важно: используем время в Софии для сравнения
+        tz = pytz.timezone('Europe/Sofia')
+        now = datetime.now(tz).replace(tzinfo=None)
+
+        header = unconfirmed_sheet.row_values(1)
+        try:
+            status_col_idx = header.index('status') + 1
+        except ValueError:
+            status_col_idx = 14
+
+        for i, row in enumerate(records):
+            tid = row.get('telegram_id')
+            created_val = row.get('created_at')
+            if not tid or not created_val: continue
+
+            try:
+                # Парсим дату в формате 25.02.2026 20:37:30
+                start_dt = datetime.strptime(str(created_val), "%d.%m.%Y %H:%M:%S")
+            except:
+                continue
+
+            diff = now - start_dt
+            target = str(row.get('target', '')).lower()
+            is_cd = "cd" in target
+            current_status = str(row.get('status', ''))
+            row_idx = i + 2
+
+            # ТВОИ ТЕСТОВЫЕ ИНТЕРВАЛЫ (1, 2, 3 минуты)
+            # 1 Касание
+            if timedelta(minutes=1) <= diff < timedelta(minutes=2) and "notified_n1" not in current_status:
+                msg = ("🎁 Почти готово! Ответьте на пару вопросов и заберите подарок." if is_cd
+                       else "Вы начали регистрацию на программу, но не завершили её. Всё ли в порядке?")
+                await send_and_update_status(tid, msg, row_idx, status_col_idx, "notified_n1")
+
+            # 2 Касание
+            elif timedelta(minutes=2) <= diff < timedelta(minutes=3) and "notified_n2" not in current_status:
+                msg = ("Ваша 'Формула Результата' всё еще ждет вас. Завершите опрос, чтобы получить её." if is_cd
+                       else "Мы всё еще сохраняем ваше место на программу. Регистрация актуальна для вас?")
+                await send_and_update_status(tid, msg, row_idx, status_col_idx, "notified_n2")
+
+            # 3 Касание
+            elif timedelta(minutes=3) <= diff < timedelta(minutes=10) and "notified_n3" not in current_status:
+                msg = (
+                    "Я всё еще на связи! Если актуально получить подарок — анкету можно заполнить в любое время." if is_cd
+                    else "Хотел напомнить, что вы можете завершить регистрацию в любое время.")
+                await send_and_update_status(tid, msg, row_idx, status_col_idx, "notified_n3")
+
+    except Exception as e:
+        logging.error(f"!!! ОШИБКА SCHEDULER: {e}")
+
+
+# Регистрируем задачу в планировщике
+scheduler.add_job(check_abandoned_carts, "interval", minutes=1, id="check_job", replace_existing=True)
+
 # ================== ХЕНДЛЕРЫ ==================
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     args = message.text.split()
+    # Если зашли просто так — по умолчанию воронка 'w'
     param = args[1] if len(args) > 1 else "w_organic_none"
 
+    # Обработка возврата из Формулы
     if param == "w_from_formula":
-        await state.update_data(telegram_id=message.from_user.id, username=message.from_user.username or "none",
-                                target="w", source="from_formula")
+        await state.update_data(
+            telegram_id=message.from_user.id,
+            username=message.from_user.username or "none",
+            target="w",
+            source="from_formula"
+        )
         await message.answer(
-            "🚀 С возвращением! Вы рассчитали Формулу. Теперь пора внедрить её в жизнь.\nГотовы обсудить программу на диагностике?",
+            "🚀 С возвращением! Вы рассчитали Формулу. Теперь пора внедрить её в жизнь.\n"
+            "Готовы обсудить программу на диагностике?",
             reply_markup=get_reply_kb(["Да, готов(а)", "Узнать подробнее"]))
         await state.set_state(BookingForm.main_task)
         return
 
+    # Парсим параметры (target_source_campaign)
     parts = param.split("_")
     target = parts[0] if parts[0] in ["w", "m", "cd", "cw", "cm"] else "w"
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    data = {"telegram_id": message.from_user.id, "username": message.from_user.username or "none",
-            "target": target, "source": parts[1] if len(parts) > 1 else "organic",
-            "campaign": parts[2] if len(parts) > 2 else "none", "name": "", "email": "", "created_at": now_str}
+    # ВАЖНО: используем формат с точками для корректного дожатия
+    tz = pytz.timezone('Europe/Sofia')
+    now_str = datetime.now(tz).strftime("%d.%m.%Y %H:%M:%S")
+
+    data = {
+        "telegram_id": message.from_user.id,
+        "username": message.from_user.username or "none",
+        "target": target,
+        "source": parts[1] if len(parts) > 1 else "organic",
+        "campaign": parts[2] if len(parts) > 2 else "none",
+        "name": "",
+        "email": "",
+        "created_at": now_str
+    }
+
     await state.update_data(**data)
-    sync_unconfirmed(data, now_str)
+    sync_unconfirmed(data, now_str)  # Записываем в таблицу время создания как начальный статус
 
+    # Твой полный текст приветствия
     if target == "cd":
-        msg = ("Приветствую!\n\nБлагодарю за помощь в моем исследовании темы \n\n"
-               "'Бизнес как продолжение любви'.\n\n Ваше мнение - важная часть этого проекта. \n\n"
-               "В конце я пришлю обещанный расчет вашей персональной 'Формулы Результата'. \n\n"
-               "Как к вам обращаться?")
+        msg = (
+            "Приветствую!\n\n"
+            "Благодарю за помощь в моем исследовании темы \n\n"
+            "'Бизнес как продолжение любви'.\n\n"
+            "Ваше мнение - важная часть этого проекта. \n\n"
+            "В конце я пришлю обещанный расчет вашей персональной 'Формулы Результата'. \n\n"
+            "Как к вам обращаться?"
+        )
     else:
-        msg = ("Здравствуйте.\n\n"
-        "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' "
-        "- это про то, как быть сильной, не ослабляя партнёра. "
-        "И как создать дело, которое укрепляет отношения, а не разрушает их.\n\n"
-        "Диагностика - это первый шаг к тому, чтобы увидеть свою жизнь как систему.\n\n"
-        "Как к вам можно обращаться?")
+        msg = (
+            "Здравствуйте.\n\n"
+            "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' "
+            "- это про то, как быть сильной, не ослабляя партнёра. "
+            "И как создать дело, которое укрепляет отношения, а не разрушает их.\n\n"
+            "Диагностика - это первый шаг к тому, чтобы увидеть свою жизнь как систему.\n\n"
+            "Как к вам можно обращаться?"
+        )
 
     await message.answer(msg, reply_markup=ReplyKeyboardRemove())
     await state.set_state(BookingForm.name)
@@ -361,72 +407,6 @@ async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
 
     await state.clear()
 
-# Дожатие 3 касания
-async def check_abandoned_carts():
-    tz = pytz.timezone('Europe/Sofia')
-    now = datetime.now(tz).replace(tzinfo=None)
-    try:
-        records = unconfirmed_sheet.get_all_records()
-        if not records:
-            return
-
-        now = datetime.now()
-        header = unconfirmed_sheet.row_values(1)
-
-        # Ищем колонку для статуса, если нет — используем 14-ю
-        try:
-            status_col_idx = header.index('status') + 1
-        except ValueError:
-            status_col_idx = 14
-
-        for i, row in enumerate(records):
-            tid = row.get('telegram_id')
-            if not tid: continue
-
-            try:
-                created_val = row.get('created_at')
-                if not created_val:
-                    continue
-
-                start_dt = datetime.strptime(str(created_val), "%d.%m.%Y %H:%M:%S")
-            except Exception as e:
-                print(f"DEBUG: Ошибка даты на строке {i + 2}: {e} (значение: {row.get('created_at')})")
-                continue
-
-            diff = now - start_dt
-            target = str(row.get('target', '')).lower()
-            is_cd = "cd" in target
-            current_status = str(row.get('status', ''))
-            row_idx = i + 2
-
-            # --- 1 КАСАНИЕ (15 минут) ---
-            if timedelta(minutes=1) <= diff < timedelta(hours=1) and "notified_n1" not in current_status:
-                msg = ("🎁 Почти готово! Ответьте на пару вопросов и заберите подарок." if is_cd
-                       else "Вы начали регистрацию на программу, но не завершили её. Всё ли в порядке?")
-                await send_and_update_status(tid, msg, row_idx, status_col_idx, "notified_n1")
-
-            # --- 2 КАСАНИЕ (3 дня) ---
-            #elif timedelta(days=3) <= diff < timedelta(days=4) and "notified_n2" not in current_status:
-            elif timedelta(minutes=2) <= diff < timedelta(minutes=5) and "notified_n1" not in current_status:
-                msg = ("Ваша 'Формула Результата' всё еще ждет вас. Завершите опрос, чтобы получить её." if is_cd
-                       else "Мы всё еще сохраняем ваше место на программу. Регистрация актуальна для вас?")
-                await send_and_update_status(tid, msg, row_idx, status_col_idx, "notified_n2")
-
-            # --- 3 КАСАНИЕ (7 дней) — НОВОЕ ---
-            #elif timedelta(days=7) <= diff < timedelta(days=8) and "notified_n3" not in current_status:
-            elif timedelta(minutes=3) <= diff < timedelta(minutes=5) and "notified_n1" not in current_status:
-                msg = (
-                    "Я всё еще на связи! Если актуально получить подарок и разобрать вашу ситуацию — анкету можно заполнить в любое время." if is_cd
-                    else "Хотел напомнить, что вы можете завершить регистрацию в любое время. Если возникли вопросы или сомнения — просто напишите мне.")
-                await send_and_update_status(tid, msg, row_idx, status_col_idx, "notified_n3")
-
-    except Exception as e:
-        print(f"!!! ОШИБКА SCHEDULER: {e}")
-
-# Добавляем задачу (проверка брошенных корзин каждые 10 минут)
-scheduler.add_job(check_abandoned_carts,
-    "interval", minutes=10, id="check_abandoned_carts_job",
-    replace_existing=True)
 
 # Вспомогательная функция, чтобы не дублировать код
 async def send_and_update_status(tid, msg, row_idx, col_idx, status_code):
@@ -436,12 +416,23 @@ async def send_and_update_status(tid, msg, row_idx, col_idx, status_code):
         print(f"DEBUG: {status_code} отправлено {tid}")
     except Exception as e:
         print(f"DEBUG: Ошибка отправки {status_code} для {tid}: {e}")
+
+@dp.callback_query(F.data == "confirm_final")
+async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    finalize_to_main(data)
+    send_to_notion(data)
+    await callback.message.edit_text("✅ Данные приняты!")
+    await state.clear()
+
 # ================== ЗАПУСК ==================
 async def handle_webhook(request):
-    body = await request.json()
-    await dp.feed_update(bot, Update.model_validate(body))
+    try:
+        body = await request.json()
+        await dp.feed_update(bot, Update.model_validate(body))
+    except Exception as e:
+        logging.error(f"Webhook error: {e}")
     return web.Response(text="ok")
-
 
 async def on_startup(app):
     await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
