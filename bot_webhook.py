@@ -180,6 +180,8 @@ async def check_abandoned_carts():
                 continue
 
             diff = now - start_dt
+            logging.info(f"DEBUG: Строка {i + 2}. Таблица: {start_dt}, Сейчас: {now}")
+            logging.info(f"DEBUG: Разница (минуты): {diff.total_seconds() / 60:.2f}")
             target = str(row.get('target', '')).lower()
             is_cd = "cd" in target
             current_status = str(row.get('status', ''))
