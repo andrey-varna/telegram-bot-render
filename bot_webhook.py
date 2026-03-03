@@ -447,12 +447,16 @@ async def handle_webhook(request):
         logging.error(f"Webhook error: {e}")
     return web.Response(text="ok")
 
+async def handle_index(request):
+    return web.Response(text="Бот работает!", status=200)
+
 async def on_startup(app):
     await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
     scheduler.start()
 
 app = web.Application()
 app.router.add_post("/webhook", handle_webhook)
+app.router.add_get("/", handle_index)
 app.on_startup.append(on_startup)
 
 if __name__ == "__main__":
