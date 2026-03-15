@@ -1,23 +1,23 @@
 # Web & Server
-fastapi==0.109.0
-uvicorn==0.27.0
-python-dotenv==1.0.0
+fastapi
+uvicorn
+python-dotenv
 
-# Telegram
-aiogram==3.1.1
-aiohttp==3.8.5
+# Telegram (убираем жесткие версии, чтобы pip нашел баланс)
+aiogram>=3.1.1
+aiohttp
 
-# AI & Database (Фиксированные версии для устранения ошибки proxies)
-openai==1.12.0
+# AI & Database (КРИТИЧЕСКИ ВАЖНО для устранения ошибки proxies)
+openai>=1.12.0
 httpx==0.27.0
-chromadb==0.4.22
+chromadb
 
 # Integrations
-gspread==5.7.2
-google-auth==2.24.0
-notion-client==2.2.1
+gspread
+google-auth
+notion-client
 
 # Scheduling & Time
-apscheduler==3.10.4
-pytz==2023.3.post1
-tzdata==2023.3
+apscheduler
+pytz
+tzdata
