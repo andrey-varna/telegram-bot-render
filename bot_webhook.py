@@ -493,22 +493,42 @@ async def handle_webhook(request):
 
 
 async def handle_ask_website(request):
-    """Принимает сообщения с сайта (Тильда)"""
+    # Заголовки, которые разрешают Тильде обращаться к твоему серверу
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    }
+
+    # 1. Обработка "предзапроса" браузера (Preflight request)
+    if request.method == "OPTIONS":
+        return web.Response(status=200, headers=headers)
+
     try:
         data = await request.json()
         user_id = data.get("user_id", "web_anonymous")
         question = data.get("question")
 
+        if not question:
+            return web.json_response({"error": "No question provided"}, status=400, headers=headers)
+
+        # Логика ИИ
         history = get_history(user_id)
         answer = await brain.get_answer(question, history)
 
-        new_history = history + [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
+        # Сохранение истории
+        new_history = history + [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": answer}
+        ]
         save_history(user_id, new_history)
 
-        return web.json_response({"answer": answer})
+        # Возвращаем ответ с заголовками CORS
+        return web.json_response({"answer": answer}, headers=headers)
+
     except Exception as e:
-        logging.error(f"Ошибка в handle_ask_website: {e}")
-        return web.json_response({"error": str(e)}, status=500)
+        logging.error(f"Error in /ask: {e}")
+        return web.json_response({"error": str(e)}, status=500, headers=headers)
 
 
 async def handle_index(request):
@@ -527,7 +547,7 @@ async def on_startup(app):
 
 app = web.Application()
 app.router.add_post("/webhook", handle_webhook)  # Вход для ТГ
-app.router.add_post("/ask", handle_ask_website)  # Вход для Сайта
+app.router.add_route("*", "/ask", handle_ask_website)  # Вход для Сайта
 app.router.add_get("/", handle_index)  # Главная страница
 app.on_startup.append(on_startup)
 
