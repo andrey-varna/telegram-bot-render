@@ -364,11 +364,14 @@ async def cmd_start(message: types.Message, state: FSMContext):
     user_id = f"tg_{message.from_user.id}"
     save_history(user_id, [])
 
-    # 3. Разбираем параметры старта (твоя логика из рекламы/органики)
+    # 3. Разбираем параметры старта
     args = message.text.split()
     param = args[1] if len(args) > 1 else "w_organic_none"
 
-    # Обработка возврата из "Формулы" (если была такая ветка)
+    # ЛОГ ДЛЯ ПРОВЕРКИ (Увидишь в Render Logs, что пришло на самом деле)
+    logging.info(f">>> NEW START: user={message.from_user.id}, param={param}")
+
+    # Обработка возврата из "Формулы"
     if param == "w_from_formula":
         await state.update_data(
             telegram_id=message.from_user.id,
@@ -384,6 +387,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         return
 
     # Парсим параметры (цель_источник_кампания)
+    # Используем .split("_"), но берем первый элемент как target
     parts = param.split("_")
     target = parts[0] if parts[0] in ["w", "m", "cd", "cw", "cm"] else "w"
 
@@ -406,7 +410,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.update_data(**data)
     sync_unconfirmed(data, now_str)
 
-    # 5. Выдаем приветственный текст в зависимости от захода (цели)
+    # 5. Выдаем приветственный текст (Твой полный текст вернули на место)
     if target == "cd":
         msg = (
             "Приветствую!\n\n"
@@ -427,28 +431,30 @@ async def cmd_start(message: types.Message, state: FSMContext):
         )
 
     await message.answer(msg, reply_markup=ReplyKeyboardRemove())
+    await state.set_state(BookingForm.name)
+    await message.answer(msg, reply_markup=ReplyKeyboardRemove())
 
     # Переводим бота в режим ожидания имени
 
     await state.set_state(BookingForm.name)
 
-# ================== ИНТЕГРАЦИЯ ИИ (ГЛАВНОЕ ИЗМЕНЕНИЕ) ==================
-
 @dp.message()
 async def main_handler(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
 
-    # 1. Если пользователь в процессе опроса — ведем его по воронке
+    # 1. Если пользователь в процессе опроса — игнорируем, aiogram сам найдет нужный хендлер
     if current_state is not None:
-        # Здесь aiogram сам подхватит proc_name, proc_role и т.д.
         return
 
-        # 2. Если пользователь просто пишет боту (вне воронки) — отвечает Александр
+    # 2. Достаем имя из анкеты, если оно там есть
+    user_data = await state.get_data()
+    user_name = user_data.get("name") # Имя, которое мы сохранили в BookingForm.name
+
     user_id = f"tg_{message.from_user.id}"
     history = get_history(user_id)
 
-    # Получаем ответ от ИИ
-    answer = await brain.get_answer(message.text, history)
+    # ПЕРЕДАЕМ ИМЯ в мозг Александра
+    answer = await brain.get_answer(message.text, history, user_name=user_name)
 
     # Сохраняем историю
     new_history = history + [
@@ -456,28 +462,51 @@ async def main_handler(message: types.Message, state: FSMContext):
         {"role": "assistant", "content": answer}
     ]
     save_history(user_id, new_history)
-
     await message.answer(answer)
-
 
 # ================== API ДЛЯ САЙТА (ТИЛЬДА) ==================
 
 async def handle_ask_website(request):
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    }
+    if request.method == "OPTIONS":
+        return web.Response(status=200, headers=headers)
+
     try:
         data = await request.json()
         user_id = data.get("user_id", "web_anonymous")
-        question = data.get("question")
+        question = data.get("question", "").strip()
 
+        # 1. Проверяем историю
         history = get_history(user_id)
+
+        # 2. Если это ПЕРВОЕ сообщение от пользователя
+        if not history:
+            welcome_text = (
+                "Здравствуйте! Рада, что вы заглянули на сайт.\n\n"
+                "Я — Александр, ИИ-помощник PRO Unity Consult. Подскажу по программе и диагностике.\n"
+                "Как к вам можно обращаться?"
+            )
+            # Сохраняем "виртуальное" приветствие в историю, чтобы в следующий раз ИИ знал имя
+            save_history(user_id, [{"role": "assistant", "content": welcome_text}])
+            return web.json_response({"answer": welcome_text}, headers=headers)
+
+        # 3. Если история уже есть, работаем через AssistantBrain
         answer = await brain.get_answer(question, history)
 
-        new_history = history + [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
-        save_history(user_id, new_history)
+        # Обновляем историю
+        history.append({"role": "user", "content": question})
+        history.append({"role": "assistant", "content": answer})
+        save_history(user_id, history)
 
-        return web.json_response({"answer": answer})
+        return web.json_response({"answer": answer}, headers=headers)
+
     except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
-
+        logging.error(f"Ошибка на сайте: {e}")
+        return web.json_response({"error": "Ошибка связи"}, status=500, headers=headers)
 
 # ================== ЗАПУСК СЕРВЕРА ==================
 async def handle_webhook(request):
@@ -493,44 +522,57 @@ async def handle_webhook(request):
 
 
 async def handle_ask_website(request):
-    # Заголовки, которые разрешают Тильде обращаться к твоему серверу
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
     }
 
-    # 1. Обработка "предзапроса" браузера (Preflight request)
     if request.method == "OPTIONS":
         return web.Response(status=200, headers=headers)
 
     try:
         data = await request.json()
         user_id = data.get("user_id", "web_anonymous")
-        question = data.get("question")
+        question = data.get("question", "").strip()
 
         if not question:
-            return web.json_response({"error": "No question provided"}, status=400, headers=headers)
+            return web.json_response({"error": "No question"}, status=400, headers=headers)
 
-        # Логика ИИ
+        # 1. Получаем историю из БД
         history = get_history(user_id)
+
+        # 2. ПРИВЕТСТВИЕ ДЛЯ НОВЫХ (если история пуста)
+        if not history:
+            welcome_text = (
+                "Здравствуйте! Рады, что вы заглянули на наш сайт.\n\n"
+                "Я — Александр, ИИ-помощник PRO Unity Consult. Подскажу по программе и диагностике.\n\n"
+                "Как к вам можно обращаться?"
+            )
+            # Сразу записываем это в базу как первый контакт
+            save_history(user_id, [{"role": "assistant", "content": welcome_text}])
+            return web.json_response({"answer": welcome_text}, headers=headers)
+
+        # 3. ЛОГИКА ИИ (ограничение и ответ)
+        # Brain сам проверит лимит 5 вопросов, если ты добавил это туда
         answer = await brain.get_answer(question, history)
 
-        # Сохранение истории
+        # 4. ОЧИСТКА ССЫЛОК (чтобы на сайте не было "роботекста" со скобками)
+        # Убираем разметку Telegram [текст](ссылка), оставляя только чистый текст
+        clean_answer = answer.replace("[", "").replace("]", "").replace("(", " ").replace(")", "")
+
+        # 5. Сохранение истории (добавляем новые сообщения)
         new_history = history + [
             {"role": "user", "content": question},
             {"role": "assistant", "content": answer}
         ]
         save_history(user_id, new_history)
 
-        # Возвращаем ответ с заголовками CORS
-        return web.json_response({"answer": answer}, headers=headers)
+        return web.json_response({"answer": clean_answer}, headers=headers)
 
     except Exception as e:
         logging.error(f"Error in /ask: {e}")
-        return web.json_response({"error": str(e)}, status=500, headers=headers)
-
-
+        return web.json_response({"error": "Сервер занят, попробуйте позже"}, status=500, headers=headers)
 async def handle_index(request):
     """Для проверки, что сервер жив"""
     return web.Response(text="Бот и ИИ-менеджер PRO Unity Consult работают!", status=200)
