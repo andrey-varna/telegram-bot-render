@@ -2,68 +2,48 @@ import os
 import json
 import logging
 import traceback
-import asyncio
+import psycopg2
 from datetime import datetime, timedelta
 import pytz
-
-# FastAPI и серверные компоненты
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
-
-# Aiogram
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove, Update
-from aiogram.fsm.storage.memory import MemoryStorage
-
-# Внешние сервисы
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiohttp import web
 import gspread
 from google.oauth2.service_account import Credentials
 from notion_client import Client
 
-# Логика ИИ
+# Импортируем твой обновленный мозг
 from src.brain import AssistantBrain
 
 # ================== КОНФИГУРАЦИЯ ==================
-logging.basicConfig(level=logging.INFO)
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL") # Postgres на Render
 SPREADSHEET_KEY = os.getenv("MAIN_SHEET_KEY")
 ADMIN_ZHENA_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "0"))
 ADMIN_MUZH_ID = int(os.getenv("ADMIN_MUZH_ID", "0"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PORT = int(os.getenv("PORT", "10000"))
+
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = "308a163edd1580caa995ecbefbfe7ee4"
-
 FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSfWRmYZFeaCvF7uHGTmdehQFV5x2ZLK1GW0Twgi-XbWG0m0aw/viewform"
 ENTRY_SOURCE_ID = "2108732275"
+logging.basicConfig(level=logging.INFO)
 
 # ================== ИНИЦИАЛИЗАЦИЯ ==================
-app = FastAPI()
-
-# Настройка CORS, чтобы ваш сайт мог делать запросы к API
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 brain = AssistantBrain()
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+dp = Dispatcher()
 scheduler = AsyncIOScheduler(timezone="Europe/Sofia")
 
-# API Клиенты
+# Инициализация Google/Notion (оставляем твой код без изменений)
 try:
-    SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     service_account_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
-    credentials = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
+    credentials = Credentials.from_service_account_info(service_account_info, scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"])
     gc = gspread.authorize(credentials)
     spreadsheet = gc.open_by_key(SPREADSHEET_KEY)
     main_sheet = spreadsheet.worksheet("leads_main")
@@ -72,17 +52,44 @@ try:
 except Exception as e:
     logging.error(f"Критическая ошибка инициализации API: {e}")
 
+# ================== РАБОТА С POSTGRES (ПАМЯТЬ ИИ) ==================
+def init_db():
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute('''CREATE TABLE IF NOT EXISTS chat_history 
+                   (user_id TEXT PRIMARY KEY, history JSONB)''')
+    conn.commit()
+    cur.close()
+    conn.close()
+
+init_db()
+
+def get_history(user_id):
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("SELECT history FROM chat_history WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        return row[0] if row else []
+    except: return []
+
+def save_history(user_id, history):
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute("INSERT INTO chat_history (user_id, history) VALUES (%s, %s) "
+                "ON CONFLICT (user_id) DO UPDATE SET history = EXCLUDED.history",
+                (user_id, json.dumps(history)))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# ================== ХЕНДЛЕРЫ ВОРОНКИ (ТВОИ СТАРЫЕ) ==================
 
 class BookingForm(StatesGroup):
-    target = State()
-    name = State()
-    role = State()
-    business_stage = State()
-    partner = State()
-    main_task = State()
-    time_of_day = State()
-    email = State()
-
+    target = State(); name = State(); role = State(); business_stage = State()
+    partner = State(); main_task = State(); time_of_day = State(); email = State()
 
 # ================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==================
 
@@ -211,22 +218,22 @@ scheduler.add_job(check_abandoned_carts, "interval", minutes=15)
 
 # ================== API ЭНДПОИНТЫ ==================
 
-@app.post("/ask")
-async def ask_website(request: Request):
+#@app.post("/ask")
+async def ask_website(request):
     data = await request.json()
     question = data.get("question", "")
     answer = await brain.get_answer(question)
     return {"answer": answer}
 
 
-@app.post("/webhook")
-async def telegram_webhook(request: Request):
+#@app.post("/webhook")
+async def telegram_webhook(request):
     update = Update.model_validate(await request.json(), context={"bot": bot})
     await dp.feed_update(bot, update)
     return {"ok": True}
 
 
-@app.get("/")
+#@app.get("/")
 async def health_check():
     return {"status": "running", "time": datetime.now().isoformat()}
 
@@ -327,8 +334,16 @@ async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
     send_to_notion(data)
 
     if data.get("target") == "cd":
-        label = f"{data['target']}_{data.get('source')}"
+        # Берем значения безопасно, чтобы не вылетало ошибок, если ключа нет
+        target_val = data.get("target", "cd")
+        source_val = data.get("source", "unknown")
+
+        # Формируем метку
+        label = f"{target_val}_{source_val}"
+
+        # Собираем финальную ссылку
         link = f"{FORM_URL}?usp=pp_url&entry.{ENTRY_SOURCE_ID}={label}"
+
         await callback.message.edit_text(f"✅ Спасибо! Ваша ссылка: {link}")
     else:
         await callback.message.edit_text("✅ Данные приняты! Мы свяжемся с вами.")
@@ -340,24 +355,181 @@ async def confirm_final(callback: types.CallbackQuery, state: FSMContext):
 
 
 # --- ФИНАЛЬНЫЙ ХЕНДЛЕР ДЛЯ ИИ ---
-@dp.message()
-async def ai_handler(message: types.Message, state: FSMContext):
-    if await state.get_state() is not None: return
-    if not message.text: return
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message, state: FSMContext):
+    # 1. Сбрасываем текущее состояние анкеты (aiogram FSM)
+    await state.clear()
 
-    await bot.send_chat_action(message.chat.id, "typing")
-    answer = await brain.get_answer(message.text)
+    # 2. ОЧИЩАЕМ ПАМЯТЬ ИИ в Postgres (чтобы Александр начал с чистого листа)
+    user_id = f"tg_{message.from_user.id}"
+    save_history(user_id, [])
+
+    # 3. Разбираем параметры старта (твоя логика из рекламы/органики)
+    args = message.text.split()
+    param = args[1] if len(args) > 1 else "w_organic_none"
+
+    # Обработка возврата из "Формулы" (если была такая ветка)
+    if param == "w_from_formula":
+        await state.update_data(
+            telegram_id=message.from_user.id,
+            username=message.from_user.username or "none",
+            target="w",
+            source="from_formula"
+        )
+        await message.answer(
+            "🚀 С возвращением! Вы рассчитали Формулу. Теперь пора внедрить её в жизнь.\n"
+            "Готовы обсудить программу на диагностике?",
+            reply_markup=get_reply_kb(["Да, готов(а)", "Узнать подробнее"]))
+        await state.set_state(BookingForm.main_task)
+        return
+
+    # Парсим параметры (цель_источник_кампания)
+    parts = param.split("_")
+    target = parts[0] if parts[0] in ["w", "m", "cd", "cw", "cm"] else "w"
+
+    # Время для таблицы дожатий
+    tz = pytz.timezone('Europe/Sofia')
+    now_str = datetime.now(tz).strftime("%d.%m.%Y %H:%M:%S")
+
+    data = {
+        "telegram_id": message.from_user.id,
+        "username": message.from_user.username or "none",
+        "target": target,
+        "source": parts[1] if len(parts) > 1 else "organic",
+        "campaign": parts[2] if len(parts) > 2 else "none",
+        "name": "",
+        "email": "",
+        "created_at": now_str
+    }
+
+    # 4. Сохраняем данные во временную анкету и синхронизируем с Google Таблицей
+    await state.update_data(**data)
+    sync_unconfirmed(data, now_str)
+
+    # 5. Выдаем приветственный текст в зависимости от захода (цели)
+    if target == "cd":
+        msg = (
+            "Приветствую!\n\n"
+            "Благодарю за помощь в моем исследовании темы \n\n"
+            "'Бизнес как продолжение любви'.\n\n"
+            "Ваше мнение - важная часть этого проекта. \n\n"
+            "В конце я пришлю обещанный расчет вашей персональной 'Формулы Результата'. \n\n"
+            "Как к вам обращаться?"
+        )
+    else:
+        msg = (
+            "Здравствуйте.\n\n"
+            "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' "
+            "- это про то, как быть сильной, не ослабляя партнёра. "
+            "И как создать дело, которое укрепляет отношения, а не разрушает их.\n\n"
+            "Диагностика - это первый шаг к тому, чтобы увидеть свою жизнь как систему.\n\n"
+            "Как к вам можно обращаться?"
+        )
+
+    await message.answer(msg, reply_markup=ReplyKeyboardRemove())
+
+    # Переводим бота в режим ожидания имени
+
+    await state.set_state(BookingForm.name)
+
+# ================== ИНТЕГРАЦИЯ ИИ (ГЛАВНОЕ ИЗМЕНЕНИЕ) ==================
+
+@dp.message()
+async def main_handler(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+
+    # 1. Если пользователь в процессе опроса — ведем его по воронке
+    if current_state is not None:
+        # Здесь aiogram сам подхватит proc_name, proc_role и т.д.
+        return
+
+        # 2. Если пользователь просто пишет боту (вне воронки) — отвечает Александр
+    user_id = f"tg_{message.from_user.id}"
+    history = get_history(user_id)
+
+    # Получаем ответ от ИИ
+    answer = await brain.get_answer(message.text, history)
+
+    # Сохраняем историю
+    new_history = history + [
+        {"role": "user", "content": message.text},
+        {"role": "assistant", "content": answer}
+    ]
+    save_history(user_id, new_history)
+
     await message.answer(answer)
 
 
-# ================== ЗАПУСК ==================
+# ================== API ДЛЯ САЙТА (ТИЛЬДА) ==================
 
-@app.on_event("startup")
-async def on_startup():
+async def handle_ask_website(request):
+    try:
+        data = await request.json()
+        user_id = data.get("user_id", "web_anonymous")
+        question = data.get("question")
+
+        history = get_history(user_id)
+        answer = await brain.get_answer(question, history)
+
+        new_history = history + [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
+        save_history(user_id, new_history)
+
+        return web.json_response({"answer": answer})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
+
+# ================== ЗАПУСК СЕРВЕРА ==================
+async def handle_webhook(request):
+    """Принимает сообщения из Telegram"""
+    try:
+        body = await request.json()
+        update = Update.model_validate(body)
+        await dp.feed_update(bot, update)
+        return web.Response(text="ok")
+    except Exception as e:
+        logging.error(f"Ошибка в handle_webhook: {e}")
+        return web.Response(text="error", status=500)
+
+
+async def handle_ask_website(request):
+    """Принимает сообщения с сайта (Тильда)"""
+    try:
+        data = await request.json()
+        user_id = data.get("user_id", "web_anonymous")
+        question = data.get("question")
+
+        history = get_history(user_id)
+        answer = await brain.get_answer(question, history)
+
+        new_history = history + [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
+        save_history(user_id, new_history)
+
+        return web.json_response({"answer": answer})
+    except Exception as e:
+        logging.error(f"Ошибка в handle_ask_website: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def handle_index(request):
+    """Для проверки, что сервер жив"""
+    return web.Response(text="Бот и ИИ-менеджер PRO Unity Consult работают!", status=200)
+
+
+# ================== ЗАПУСК ПРИЛОЖЕНИЯ ==================
+
+async def on_startup(app):
+    # Эта строка говорит Телеграму: "Отправляй сообщения на этот адрес"
     await bot.set_webhook(f"{WEBHOOK_URL}/webhook")
     scheduler.start()
+    logging.info(">>> Сервер успешно запущен и вебхук установлен")
 
+
+app = web.Application()
+app.router.add_post("/webhook", handle_webhook)  # Вход для ТГ
+app.router.add_post("/ask", handle_ask_website)  # Вход для Сайта
+app.router.add_get("/", handle_index)  # Главная страница
+app.on_startup.append(on_startup)
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    web.run_app(app, host="0.0.0.0", port=PORT)
