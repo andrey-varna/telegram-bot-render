@@ -116,25 +116,50 @@ def sync_unconfirmed(data: dict, status: str):
     try:
         tid = str(data.get("telegram_id"))
         target = data.get("target", "w")
-        created_at = data.get("created_at") or datetime.now(pytz.timezone('Europe/Sofia')).strftime("%d.%m.%Y %H:%M:%S")
 
+        # Определяем время (Болгария)
+        tz = pytz.timezone('Europe/Sofia')
+        created_at = data.get("created_at") or datetime.now(tz).strftime("%d.%m.%Y %H:%M:%S")
+
+        # Формируем строку (15 колонок A-O)
         row = [
-            tid, data.get("username", ""), target, data.get("source", ""), data.get("campaign", ""),
-            data.get("name", ""), data.get("role", ""), data.get("business_stage", ""), data.get("partner", ""),
-            ("" if target == "cd" else data.get("main_task", "")),
-            (data.get("main_task", "") if target == "cd" else ""),
-            data.get("time_of_day", ""), data.get("email", ""),
-            created_at, status
+            tid,
+            data.get("username", ""),
+            target,
+            data.get("source", ""),
+            data.get("campaign", ""),
+            data.get("name", ""),
+            data.get("role", ""),
+            data.get("business_stage", ""),
+            data.get("partner", ""),
+            ("" if target == "cd" else data.get("main_task", "")),  # Для обычных
+            (data.get("main_task", "") if target == "cd" else ""),  # Для CD (исследование)
+            data.get("time_of_day", ""),
+            data.get("email", ""),
+            created_at,
+            status
         ]
 
-        cells = unconfirmed_sheet.findall(tid, in_column=1)
-        if cells:
-            unconfirmed_sheet.update(f"A{cells[-1].row}:O{cells[-1].row}", [row])
-        else:
-            unconfirmed_sheet.append_row(row)
-    except Exception as e:
-        logging.error(f"Sheet error: {e}")
+        # 1. Ищем ID пользователя ТОЛЬКО в первом столбце (Column A)
+        col_a_values = unconfirmed_sheet.col_values(1)
 
+        try:
+            # Находим индекс (list.index вернет первое совпадение)
+            # +1 потому что в Python индексы с 0, а в Таблицах с 1
+            row_index = col_a_values.index(tid) + 1
+            # ОБНОВЛЯЕМ существующую строку
+            unconfirmed_sheet.update(range_name=f"A{row_index}:O{row_index}", values=[row])
+            logging.info(f"Обновлена строка {row_index} для ID {tid}")
+
+        except ValueError:
+            # 2. Если ID не найден — ДОБАВЛЯЕМ новую строку в самый конец
+            # Используем insert_row в len+1, это надежнее чем append_row
+            next_free_row = len(col_a_values) + 1
+            unconfirmed_sheet.insert_row(row, index=next_free_row)
+            logging.info(f"Создана новая строка {next_free_row} для ID {tid}")
+
+    except Exception as e:
+        logging.error(f"Критическая ошибка Google Sheets: {e}")
 
 def finalize_to_main(data: dict):
     try:
@@ -366,57 +391,58 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
     # 3. Разбираем параметры старта
     args = message.text.split()
-    param = args[1] if len(args) > 1 else "w_organic_none"
+    # Чистим параметр от пробелов и приводим к нижнему регистру
+    raw_param = args[1].strip().lower() if len(args) > 1 else "w_organic_none"
 
-    # ЛОГ ДЛЯ ПРОВЕРКИ (Увидишь в Render Logs, что пришло на самом деле)
-    logging.info(f">>> NEW START: user={message.from_user.id}, param={param}")
+    # ЛОГ: Позволит увидеть в Render, что именно пришло из Telegram
+    logging.info(f"--- DEBUG RAW PARAM: '{raw_param}' ---")
 
-    # Обработка возврата из "Формулы"
-    if param == "w_from_formula":
-        await state.update_data(
-            telegram_id=message.from_user.id,
-            username=message.from_user.username or "none",
-            target="w",
-            source="from_formula"
-        )
-        await message.answer(
-            "🚀 С возвращением! Вы рассчитали Формулу. Теперь пора внедрить её в жизнь.\n"
-            "Готовы обсудить программу на диагностике?",
-            reply_markup=get_reply_kb(["Да, готов(а)", "Узнать подробнее"]))
-        await state.set_state(BookingForm.main_task)
-        return
+    # Улучшенный парсинг: заменяем тире на подчеркивание для единообразия
+    clean_param = raw_param.replace("-", "_")
+    parts = clean_param.split("_")
 
-    # Парсим параметры (цель_источник_кампания)
-    # Используем .split("_"), но берем первый элемент как target
-    parts = param.split("_")
-    target = parts[0] if parts[0] in ["w", "m", "cd", "cw", "cm"] else "w"
+    # ПРОВЕРКА TARGET (Исследование или стандарт)
+    # Если в параметре есть "cd", "cw" или "cm" — это исследование (исследовательский заход)
+    if any(x in parts[0] for x in ["cd", "cw", "cm"]):
+        target = parts[0]
+    elif parts[0] == "m":
+        target = "m"
+    else:
+        target = "w"
 
-    # Время для таблицы дожатий
+    # Источник и кампания
+    source = parts[1] if len(parts) > 1 else "organic"
+    campaign = parts[2] if len(parts) > 2 else "none"
+
+    # Время для таблицы (Болгария)
     tz = pytz.timezone('Europe/Sofia')
     now_str = datetime.now(tz).strftime("%d.%m.%Y %H:%M:%S")
 
+    # Собираем данные
     data = {
         "telegram_id": message.from_user.id,
         "username": message.from_user.username or "none",
         "target": target,
-        "source": parts[1] if len(parts) > 1 else "organic",
-        "campaign": parts[2] if len(parts) > 2 else "none",
+        "source": source,
+        "campaign": campaign,
         "name": "",
         "email": "",
         "created_at": now_str
     }
 
-    # 4. Сохраняем данные во временную анкету и синхронизируем с Google Таблицей
+    # 4. Сохраняем данные и синхронизируем с Google Таблицей
     await state.update_data(**data)
-    sync_unconfirmed(data, now_str)
+    # Используем обновленную функцию sync_unconfirmed (которая не затирает строки)
+    sync_unconfirmed(data, "Не подтверждено")
 
-    # 5. Выдаем приветственный текст (Твой полный текст вернули на место)
-    if target == "cd":
+    # 5. Выдаем приветственный текст в зависимости от цели (target)
+    # Используем startswith('c'), так как 'cd', 'cw', 'cm' — это всё исследовательские ветки
+    if target.startswith('c'):
         msg = (
             "Приветствую!\n\n"
             "Благодарю за помощь в моем исследовании темы \n\n"
             "'Бизнес как продолжение любви'.\n\n"
-            "Ваше мнение - важная часть этого проекта. \n\n"
+            "Ваше мнение — важная часть этого проекта. \n\n"
             "В конце я пришлю обещанный расчет вашей персональной 'Формулы Результата'. \n\n"
             "Как к вам обращаться?"
         )
@@ -424,19 +450,17 @@ async def cmd_start(message: types.Message, state: FSMContext):
         msg = (
             "Здравствуйте.\n\n"
             "Рада, что вы здесь. Программа 'Бизнес как продолжение любви' "
-            "- это про то, как быть сильной, не ослабляя партнёра. "
+            "— это про то, как быть сильной, не ослабляя партнёра. "
             "И как создать дело, которое укрепляет отношения, а не разрушает их.\n\n"
-            "Диагностика - это первый шаг к тому, чтобы увидеть свою жизнь как систему.\n\n"
+            "Диагностика — это первый шаг к тому, чтобы увидеть свою жизнь как систему.\n\n"
             "Как к вам можно обращаться?"
         )
 
+    # 6. Отправляем ОДИН раз и ставим состояние ожидания имени
     await message.answer(msg, reply_markup=ReplyKeyboardRemove())
     await state.set_state(BookingForm.name)
-    await message.answer(msg, reply_markup=ReplyKeyboardRemove())
 
-    # Переводим бота в режим ожидания имени
-
-    await state.set_state(BookingForm.name)
+    logging.info(f"--- DEBUG RESULT: target={target}, state set to name ---")
 
 @dp.message()
 async def main_handler(message: types.Message, state: FSMContext):
